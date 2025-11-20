@@ -44,7 +44,7 @@
         </label>
 
         <label><div class="small">MANUAL SPEED</div>
-          <input id="slider" type="range" min="0" max="140" step="0.1" value="0" style="width:200px">
+          <input id="slider" type="range" min="0" max="100" step="0.1" value="0" style="width:200px">
           <div id="sliderVal" class="small">0.0 km/h</div>
         </label>
 
@@ -169,7 +169,7 @@ function drawProfile(){
       maintainAspectRatio:false,
       scales: {
         x: { type:'linear', title:{display:true,text:'Time (s)'} },
-        y: { min:0, max: 140, title:{display:true,text:'Speed (km/h)'} }
+        y: { min:0, max: 50, title:{display:true,text:'Speed (km/h)'} }
       },
       plugins: { legend: { display:true } }
     }
