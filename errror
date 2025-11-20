@@ -1,4 +1,3 @@
-psg@raspberrypi:~/project1 $ source myenv/bin/activate
 (myenv) psg@raspberrypi:~/project1 $ python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
 [MAIN] backend starting with profile: drive_cycle.csv
 [MAIN] rebased by 0s -> new start 0s
@@ -6,22 +5,16 @@ psg@raspberrypi:~/project1 $ source myenv/bin/activate
 [BACKEND] running @ 5Hz, profile_end=267.0s GPIO=off debounce=0.0
 [WS] profile + snapshot sent
 [WS] profile + snapshot sent
+[WS] profile + snapshot sent
+[WS] profile + snapshot sent
+[WS] profile + snapshot sent
+[WS] profile + snapshot sent
 [CMD] start (elapsed) 0.0
 /home/psg/project1/backend.py:219: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
   ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-[LOG] opened test_20251120T054102Z.csv
-[VIOL] crossed during grace at 0.05s (ignored)
+[LOG] opened test_20251120T054723Z.csv
+[VIOL] CROSS #1 at 0.04s actual=0.00 crossed lower (band 0.17-0.01)
 /home/psg/project1/backend.py:233: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
   self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
 [CMD] stop
-
-# 1) Stop any running backend
-sudo pkill -f backend.py 2>/dev/null || true
-
-# 2) Replace GRACE_SECONDS = 5.0 -> 0.0 in the file
-# (works even if spacing differs)
-sed -i "s/GRACE_SECONDS *= *5\.0/GRACE_SECONDS = 0.0/" backend.py
-
-# 3) Start backend again (no sudo if not using GPIO)
-python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
 
