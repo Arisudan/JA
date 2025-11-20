@@ -1,0 +1,17 @@
+(myenv) psg@raspberrypi:~/project1 $ python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
+[MAIN] backend starting with profile: drive_cycle.csv
+[MAIN] rebased by 0s -> new start 0s
+[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=off
+[BACKEND] running @ 5Hz, profile_end=267.0s GPIO=off debounce=0.0
+[WS] profile + snapshot sent
+[WS] profile + snapshot sent
+[CMD] start (elapsed) 0.0
+/home/psg/project1/backend.py:219: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+[LOG] opened test_20251120T053155Z.csv
+[VIOL] crossed during grace at 0.12s (ignored)
+/home/psg/project1/backend.py:233: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
+[WS] profile + snapshot sent
+[CMD] stop
+[CMD] reset
