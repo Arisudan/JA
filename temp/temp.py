@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 """
-backend.py - Drive-cycle backend (with real-time Excel export)
+backend.py - Immediate crossing count (restored logic)
 
-Features:
- - Existing CSV logging (same as before).
- - Real-time Excel (XLSX) write to logs/live_log.xlsx (buffered to reduce IO).
- - Sends 'update' messages as before; includes cmvr_timer/compliance fields.
- - Options:
-     --min-speed (ignore tiny lower crossings)
-     --excel-flush (rows buffer before writing Excel)
- - Dependencies: pandas, numpy, websockets, openpyxl (for to_excel)
+Behavior:
+ - Counts a violation immediately when actual crosses from inside -> outside (upper or lower)
+ - Ignores lower-bound crossings when actual <= min_speed (default 1.0 km/h) to avoid false
+   violations at start/idle.
+ - Broadcasts an immediate 'violation' message and regular 'update' messages.
+ - Supports manual slider (no GPIO) and optional GPIO.
 """
-
 import argparse, asyncio, csv, json, os, signal, sys, time
 from collections import deque
 from datetime import datetime
@@ -28,12 +25,10 @@ try:
 except Exception:
     GPIO_AVAILABLE = False
 
-# Defaults
 PORT = 8765
 TICK_HZ = 5
 LOG_DIR = "logs"
 DEFAULT_TOL = 2.0
-GRACE_SECONDS = 0.0
 
 class PulseCounter:
     def __init__(self, keep_seconds=10.0):
@@ -63,8 +58,8 @@ class PulseCounter:
             return cnt
 
 class DriveBackend:
-    def __init__(self, df, tick_hz= TICK_HZ, debounce=0.0, circ=1.94, ppr=1.0,
-                 gpio_pin=17, use_gpio=False, min_speed=0.0, debug=False, excel_flush_rows=10):
+    def __init__(self, df, tick_hz=TICK_HZ, debounce=0.0, circ=1.94, ppr=1.0,
+                 gpio_pin=17, use_gpio=False, min_speed=1.0, debug=False):
         self.profile = df.copy()
         self.tick_hz = tick_hz
         self.dt = 1.0 / tick_hz
@@ -76,46 +71,30 @@ class DriveBackend:
         self.min_speed = float(min_speed)
         self.debug = bool(debug)
 
-        # excel flush rows (buffer)
-        self.EXCEL_FLUSH_ROWS = int(excel_flush_rows)
-        self.excel_buffer = []  # list of dicts to write to excel
-
-        # runtime
         self.running = False
         self.start_monotonic = None
         self.elapsed = 0.0
 
-        # violations + CMVR timer
         self.violations = 0
         self.prev_inside = True
         self.last_cross_monotonic = None
-        self.violation_timer = 0.0
-        self.last_violation_check = None
-        self.cmvr_threshold = 0.20  # 200 ms sustained to count
 
-        # speed source
         self.mode = "manual"
         self.manual_speed = 0.0
         self.actual_speed = 0.0
 
-        # pulses
         self.pulse_counter = PulseCounter(keep_seconds=max(10, int(self.tick_hz*5)))
-
-        # websockets
         self.clients = set()
 
-        # profile arrays
         self.times = self.profile['time'].astype(float).values
         self.targets = self.profile['target'].astype(float).values
         self.uppers = self.profile['upper'].astype(float).values
         self.lowers = self.profile['lower'].astype(float).values
         self.profile_end = float(self.times[-1]) if len(self.times) else 0.0
 
-        # logging
         os.makedirs(LOG_DIR, exist_ok=True)
         self.logfile = None
         self.csv_writer = None
-        self.xlsx_path = os.path.join(LOG_DIR, "live_log.xlsx")
 
         if self.use_gpio:
             self._setup_gpio()
@@ -127,8 +106,8 @@ class DriveBackend:
             GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=10)
             if self.debug:
                 print(f"[GPIO] configured BCM{self.gpio_pin}")
-        except Exception as e:
-            print("[GPIO] setup failed:", e)
+        except Exception as exc:
+            print("[GPIO] setup failed:", exc)
             self.use_gpio = False
 
     def _gpio_cb(self, ch):
@@ -180,7 +159,7 @@ class DriveBackend:
             if not self.running:
                 self.running = True
                 self.start_monotonic = time.monotonic() - self.elapsed
-                # init prev_inside
+                # initialize prev_inside
                 if (self.mode == "manual") or (not self.use_gpio):
                     now_actual = float(self.manual_speed)
                 else:
@@ -188,10 +167,21 @@ class DriveBackend:
                 self.actual_speed = now_actual
                 target, upper, lower = self.interp_profile(self.elapsed)
                 self.prev_inside = (self.actual_speed >= lower and self.actual_speed <= upper)
-                self.violation_timer = 0.0
-                self.last_violation_check = time.monotonic()
+                # if starting already outside, count immediately (except tiny lower)
+                if not self.prev_inside:
+                    side = "upper" if self.actual_speed > upper else "lower"
+                    if side == "lower" and self.actual_speed <= self.min_speed:
+                        if self.debug:
+                            print(f"[VIOL] START outside ignored (actual {self.actual_speed:.2f} <= min {self.min_speed})")
+                    else:
+                        self.violations += 1
+                        self.last_cross_monotonic = time.monotonic()
+                        # immediate violation broadcast
+                        await self._broadcast_violation(self.violations, side, self.actual_speed, self.elapsed)
+                        if self.debug:
+                            print(f"[VIOL] START counted #{self.violations} side={side}")
                 if self.debug:
-                    print(f"[CMD] start (elapsed {self.elapsed:.2f}) initial_actual={self.actual_speed:.2f} prev_inside={self.prev_inside}")
+                    print("[CMD] start (elapsed)", round(self.elapsed,2))
                 self._open_log()
         elif cmd == "stop":
             if self.running:
@@ -205,8 +195,6 @@ class DriveBackend:
             self.violations = 0
             self.prev_inside = True
             self.last_cross_monotonic = None
-            self.violation_timer = 0.0
-            self.last_violation_check = None
             self._close_log()
             await self.broadcast({"type":"reset"})
             if self.debug:
@@ -215,7 +203,8 @@ class DriveBackend:
             m = obj.get("mode")
             if m in ("manual","real"):
                 self.mode = m
-                if self.debug: print("[CMD] set_mode", m)
+                if self.debug:
+                    print("[CMD] set_mode", m)
         elif cmd == "manual_speed":
             try:
                 self.manual_speed = float(obj.get("speed", 0.0))
@@ -229,76 +218,30 @@ class DriveBackend:
             self.logfile = open(os.path.join(LOG_DIR, fname), "w", newline='')
             self.csv_writer = csv.writer(self.logfile)
             self.csv_writer.writerow(["iso","epoch_ms","time_s","target","upper","lower","actual","violations"])
-            if self.debug: print(f"[LOG] opened {fname}")
-            # reset excel buffer (start fresh for each test)
-            self.excel_buffer = []
-            # if existing live xlsx exists, leave it -- we overwrite on flush
-            if os.path.exists(self.xlsx_path):
-                try:
-                    os.remove(self.xlsx_path)
-                except Exception:
-                    pass
+            if self.debug:
+                print(f"[LOG] opened {fname}")
         except Exception as e:
             print("[LOG] open failed:", e)
             self.logfile = None
             self.csv_writer = None
 
     def _write_log_row(self, elapsed, target, upper, lower, actual, violations):
-        # CSV row
-        if self.csv_writer:
-            try:
-                self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
-                self.logfile.flush()
-            except Exception:
-                pass
-
-        # Buffer row for Excel
-        row = {
-            "iso": datetime.utcnow().isoformat(),
-            "epoch_ms": int(time.time()*1000),
-            "time_s": round(elapsed,3),
-            "target": round(target,3),
-            "upper": round(upper,3),
-            "lower": round(lower,3),
-            "actual": round(actual,3),
-            "violations": int(violations)
-        }
-        self.excel_buffer.append(row)
-        # flush to xlsx every N rows
-        if len(self.excel_buffer) >= self.EXCEL_FLUSH_ROWS:
-            try:
-                df = pd.DataFrame(self.excel_buffer)
-                # if file exists, append by reading existing and concatenating (safe)
-                if os.path.exists(self.xlsx_path):
-                    existing = pd.read_excel(self.xlsx_path)
-                    df = pd.concat([existing, df], ignore_index=True)
-                df.to_excel(self.xlsx_path, index=False, engine='openpyxl')
-                if self.debug:
-                    print(f"[XLSX] flushed {len(self.excel_buffer)} rows -> {self.xlsx_path}")
-                self.excel_buffer = []
-            except Exception as e:
-                print("[XLSX] write failed:", e)
+        if not self.csv_writer:
+            return
+        try:
+            self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
+            self.logfile.flush()
+        except Exception:
+            pass
 
     def _close_log(self):
-        # final flush CSV
         if self.logfile:
-            try: self.logfile.close()
-            except: pass
+            try:
+                self.logfile.close()
+            except Exception:
+                pass
         self.logfile = None
         self.csv_writer = None
-        # flush any remaining excel buffer
-        if self.excel_buffer:
-            try:
-                df = pd.DataFrame(self.excel_buffer)
-                if os.path.exists(self.xlsx_path):
-                    existing = pd.read_excel(self.xlsx_path)
-                    df = pd.concat([existing, df], ignore_index=True)
-                df.to_excel(self.xlsx_path, index=False, engine='openpyxl')
-                if self.debug:
-                    print(f"[XLSX] final flush {len(self.excel_buffer)} rows -> {self.xlsx_path}")
-                self.excel_buffer = []
-            except Exception as e:
-                print("[XLSX] final write failed:", e)
 
     def compute_speed(self):
         window = 1.0
@@ -321,20 +264,25 @@ class DriveBackend:
         if coros:
             await asyncio.gather(*coros, return_exceptions=True)
 
+    async def _broadcast_violation(self, count, side, actual, elapsed):
+        msg = {"type":"violation", "time": round(elapsed,2), "violations": int(count), "side": side, "actual": round(actual,2)}
+        if self.debug:
+            print("[SEND] violation ->", msg)
+        await self.broadcast(msg)
+
     def snapshot(self):
         return {"type":"update","time":round(self.elapsed,2),"target":None,"upper":None,"lower":None,"actual":round(self.actual_speed,2),"violations":int(self.violations),"running":bool(self.running)}
 
     async def run_loop(self):
         if self.debug:
-            print(f"[BACKEND] running @ {self.tick_hz}Hz profile_end={self.profile_end}s GPIO={'on' if self.use_gpio else 'off'} debounce={self.debounce}s")
+            print(f"[BACKEND] loop {self.tick_hz}Hz profile_end={self.profile_end}s GPIO={'on' if self.use_gpio else 'off'} debounce={self.debounce}s min_speed={self.min_speed}")
         while True:
-            tick_start = time.monotonic()
-
+            t0 = time.monotonic()
             if self.running:
                 self.elapsed = time.monotonic() - (self.start_monotonic or time.monotonic())
-                if self.elapsed < 0: self.elapsed = 0.0
+                if self.elapsed < 0:
+                    self.elapsed = 0.0
 
-                # choose speed source
                 if self.mode == "manual" or not self.use_gpio:
                     self.actual_speed = float(self.manual_speed)
                 else:
@@ -342,70 +290,64 @@ class DriveBackend:
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
-                # CMVR/AIS timer behavior
-                nowm = time.monotonic()
-                if self.last_violation_check is None:
-                    delta_time = 0.0
-                    self.last_violation_check = nowm
-                else:
-                    delta_time = nowm - self.last_violation_check
-                    self.last_violation_check = nowm
-
                 inside = (self.actual_speed >= lower) and (self.actual_speed <= upper)
-                if not inside:
-                    self.violation_timer += delta_time
-                    # determine side
-                    side = "upper" if self.actual_speed > upper else "lower"
-                    # when timer exceeded, count violation (except ignore tiny lower if configured)
-                    if self.violation_timer >= self.cmvr_threshold:
-                        if not (side == "lower" and self.actual_speed <= self.min_speed):
+                crossed_event = (not inside) and self.prev_inside
+                nowm = time.monotonic()
+                crossed_flag = False
+                cross_side = None
+
+                if crossed_event:
+                    cross_side = "upper" if self.actual_speed > upper else "lower"
+                    # ignore tiny lower crossings
+                    if cross_side == "lower" and self.actual_speed <= self.min_speed:
+                        if self.debug:
+                            print(f"[VIOL] ignored tiny lower at {self.elapsed:.2f}s actual={self.actual_speed:.2f} <= min {self.min_speed}")
+                        self.prev_inside = inside
+                    else:
+                        if (self.last_cross_monotonic is None) or (nowm - self.last_cross_monotonic >= self.debounce):
                             self.violations += 1
+                            self.last_cross_monotonic = nowm
+                            crossed_flag = True
                             if self.debug:
-                                print(f"[CMVR] VIOLATION #{self.violations} at {self.elapsed:.2f}s side={side} actual={self.actual_speed:.2f} band=({lower:.2f},{upper:.2f})")
+                                print(f"[VIOL] CROSS #{self.violations} at {self.elapsed:.2f}s actual={self.actual_speed:.2f} crossed {cross_side}")
+                            # immediate violation broadcast
+                            await self._broadcast_violation(self.violations, cross_side, self.actual_speed, self.elapsed)
                         else:
                             if self.debug:
-                                print(f"[CMVR] Ignored tiny lower violation at {self.elapsed:.2f}s actual={self.actual_speed:.2f} <= min_speed {self.min_speed}")
-                        self.violation_timer = 0.0
+                                print(f"[VIOL] crossing ignored by debounce dt={nowm-self.last_cross_monotonic:.3f}s")
+                        self.prev_inside = inside
                 else:
-                    # reset timer while compliant
-                    if self.violation_timer > 0 and self.debug:
-                        print(f"[CMVR] compliance restored; timer reset (was {self.violation_timer:.3f}s)")
-                    self.violation_timer = 0.0
+                    if inside:
+                        self.prev_inside = True
 
-                # write log row (CSV + buffer for excel)
-                self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
-
-                # build and broadcast update (includes cmvr_timer)
                 msg = {
                     "type":"update",
-                    "time": round(self.elapsed,2),
-                    "target": round(target,2),
-                    "upper": round(upper,2),
-                    "lower": round(lower,2),
-                    "actual": round(self.actual_speed,2),
+                    "time": round(self.elapsed, 2),
+                    "target": round(target, 2),
+                    "upper": round(upper, 2),
+                    "lower": round(lower, 2),
+                    "actual": round(self.actual_speed, 2),
                     "violations": int(self.violations),
                     "running": True,
-                    "crossed": False,
-                    "cross_side": None,
-                    "cmvr_timer": round(self.violation_timer,3),
-                    "cmvr_compliant": inside
+                    "crossed": bool(crossed_flag),
+                    "cross_side": cross_side
                 }
+
+                self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
                 await self.broadcast(msg)
 
-                # stop if profile ended
                 if self.elapsed >= self.profile_end:
                     await self.broadcast({"type":"complete","time":round(self.elapsed,2),"violations":int(self.violations)})
                     self.running = False
                     self._close_log()
 
-            # tick sleep
-            tick_end = time.monotonic()
-            elapsed = tick_end - tick_start
+            t1 = time.monotonic()
+            elapsed = t1 - t0
             await asyncio.sleep(max(0.0, self.dt - elapsed))
 
-# Main entry
+# main
 async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=False, debug=False,
-               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=0.0, excel_flush_rows=10):
+               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=1.0):
     df = pd.read_csv(profile_path)
     if 'time' not in df.columns or 'target' not in df.columns:
         print("Profile CSV must contain 'time' and 'target' columns")
@@ -423,7 +365,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
             print(f"[MAIN] rebased by {t0}s -> new start {df['time'].iloc[0]}s")
 
     backend = DriveBackend(df, tick_hz=TICK_HZ, debounce=debounce, circ=circ, ppr=ppr,
-                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug, excel_flush_rows=excel_flush_rows)
+                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug)
 
     try:
         server = await websockets.serve(backend.handler, host, port)
@@ -436,12 +378,11 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
     loop.create_task(backend.run_loop())
 
     stop = asyncio.Future()
-    def _on_sig():
-        if not stop.done():
-            stop.set_result(None)
+    def _on_signal():
+        if not stop.done(): stop.set_result(None)
     try:
-        loop.add_signal_handler(signal.SIGINT, _on_sig)
-        loop.add_signal_handler(signal.SIGTERM, _on_sig)
+        loop.add_signal_handler(signal.SIGINT, _on_signal)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal)
     except Exception:
         pass
 
@@ -460,26 +401,26 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
         print("[MAIN] shutdown complete")
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser()
-    p.add_argument('--profile', required=True)
-    p.add_argument('--host', default='0.0.0.0')
-    p.add_argument('--port', type=int, default=PORT)
-    p.add_argument('--tol', type=float, default=DEFAULT_TOL)
-    p.add_argument('--rebase', action='store_true')
-    p.add_argument('--debug', action='store_true')
-    p.add_argument('--gpio-pin', type=int, default=17)
-    p.add_argument('--circ', type=float, default=1.94)
-    p.add_argument('--ppr', type=float, default=1.0)
-    p.add_argument('--use-gpio', action='store_true')
-    p.add_argument('--debounce', type=float, default=0.0)
-    p.add_argument('--min-speed', type=float, default=0.0, help='ignore tiny lower crossings below this actual speed (km/h)')
-    p.add_argument('--excel-flush-rows', type=int, default=10, help='how many rows to buffer before writing to live_log.xlsx')
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--profile', required=True)
+    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=PORT)
+    parser.add_argument('--tol', type=float, default=DEFAULT_TOL)
+    parser.add_argument('--rebase', action='store_true')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--gpio-pin', type=int, default=17)
+    parser.add_argument('--circ', type=float, default=1.94)
+    parser.add_argument('--ppr', type=float, default=1.0)
+    parser.add_argument('--use-gpio', action='store_true')
+    parser.add_argument('--debounce', type=float, default=0.0)
+    parser.add_argument('--min-speed', type=float, default=1.0, help='ignore lower crossings when actual <= this speed (km/h)')
+    args = parser.parse_args()
 
     print("[MAIN] backend starting with profile:", args.profile)
     try:
-        asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase, debug=args.debug,
-                         gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr, use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed, excel_flush_rows=args.excel_flush_rows))
+        asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase,
+                         debug=args.debug, gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr,
+                         use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed))
     except KeyboardInterrupt:
         print("Interrupted")
     except Exception as e:
