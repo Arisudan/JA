@@ -7,15 +7,13 @@ import csv
 import math
 
 # --- CONFIGURATION ---
-# Set to False when you connect the real sensor
+# Set to False ONLY when you connect the real sensor
 SIMULATION_MODE = True 
 DRIVE_CYCLE_FILE = 'drive_cycle.csv'
 PORT = 8765
 TOLERANCE_KMH = 2.0
-
-# --- VEHICLE PHYSICS ---
 HALL_SENSOR_PIN = 17
-WHEEL_CIRCUMFERENCE = 1.94 # meters
+WHEEL_CIRCUMFERENCE = 1.94 
 MAGNETS_PER_WHEEL = 1
 
 # Try to import GPIO
@@ -26,19 +24,17 @@ except ImportError:
     GPIO_AVAILABLE = False
 
 # --- GLOBAL STATE ---
-profile_data = [] # List of dicts: {'time':0, 'target':0, 'upper':2, 'lower':0}
-test_state = {
-    "running": False,
-    "start_time": 0,
-    "elapsed": 0.0,
-    "violations": 0,
-    "actual_speed": 0.0,
-    "manual_speed": 0.0,
-    "is_outside": False
+profile_data = []
+test_state = { 
+    "running": False, 
+    "start_time": 0, 
+    "elapsed": 0.0, 
+    "violations": 0, 
+    "actual_speed": 0.0, 
+    "manual_speed": 0.0, 
+    "is_outside": False 
 }
 clients = set()
-
-# --- HARDWARE ---
 pulse_count = 0
 last_calc_time = time.time()
 
@@ -60,52 +56,48 @@ def setup_hardware():
 
 def get_speed():
     global pulse_count, last_calc_time
-    if SIMULATION_MODE:
+    if SIMULATION_MODE: 
         return test_state["manual_speed"]
-    else:
-        now = time.time()
-        dt = now - last_calc_time
-        if dt <= 0: return test_state["actual_speed"]
-        
-        revolutions = pulse_count / MAGNETS_PER_WHEEL
-        rpm = (revolutions / dt) * 60
-        speed = (rpm * WHEEL_CIRCUMFERENCE * 60) / 1000
-        
-        pulse_count = 0
-        last_calc_time = now
-        return speed
+    
+    now = time.time()
+    dt = now - last_calc_time
+    if dt <= 0: return test_state["actual_speed"]
+    
+    revolutions = pulse_count / MAGNETS_PER_WHEEL
+    rpm = (revolutions / dt) * 60
+    speed = (rpm * WHEEL_CIRCUMFERENCE * 60) / 1000
+    
+    pulse_count = 0
+    last_calc_time = now
+    return speed
 
-# --- CSV LOADER ---
 def load_profile():
     global profile_data
     profile_data = []
     try:
         with open(DRIVE_CYCLE_FILE, 'r') as f:
-            reader = csv.DictReader(f)
-            # If CSV has no headers, this might fail, so we check
-            if reader.fieldnames and 'time' in reader.fieldnames:
+            # Check if header exists
+            has_header = csv.Sniffer().has_header(f.read(1024))
+            f.seek(0)
+            
+            if has_header:
+                reader = csv.DictReader(f)
                 for row in reader:
                     try:
                         t = float(row['time'])
                         tgt = float(row['target'])
-                        # Use CSV limits if they exist, else calculate
                         up = float(row['upper']) if 'upper' in row else tgt + TOLERANCE_KMH
                         lo = float(row['lower']) if 'lower' in row else max(0, tgt - TOLERANCE_KMH)
                         profile_data.append({'time':t, 'target':tgt, 'upper':up, 'lower':lo})
                     except: pass
             else:
-                # Fallback for headerless CSV (assume col 0 is target)
-                f.seek(0)
-                csv_reader = csv.reader(f)
-                for i, row in enumerate(csv_reader):
+                # Fallback for simple list of numbers
+                reader = csv.reader(f)
+                for i, row in enumerate(reader):
                     if row:
                         tgt = float(row[0])
-                        profile_data.append({
-                            'time': i * 1.0, # Assume 1 second steps
-                            'target': tgt,
-                            'upper': tgt + TOLERANCE_KMH,
-                            'lower': max(0, tgt - TOLERANCE_KMH)
-                        })
+                        profile_data.append({'time': i*1.0, 'target': tgt, 'upper': tgt+2, 'lower': max(0, tgt-2)})
+                        
         print(f"[DATA] Loaded {len(profile_data)} points")
     except Exception as e:
         print(f"[DATA] Error loading CSV: {e}")
@@ -114,14 +106,13 @@ def load_profile():
             tgt = 10 if 10 < i < 50 else 0
             profile_data.append({'time':i, 'target':tgt, 'upper':tgt+2, 'lower':max(0,tgt-2)})
 
-# --- INTERPOLATION ---
 def get_target_at_time(t):
     if not profile_data: return 0, 0, 0
     if t >= profile_data[-1]['time']: 
         last = profile_data[-1]
         return last['target'], last['upper'], last['lower']
     
-    # Simple linear search (optimize this later if needed)
+    # Linear interpolation
     for i in range(len(profile_data)-1):
         p1 = profile_data[i]
         p2 = profile_data[i+1]
@@ -133,18 +124,17 @@ def get_target_at_time(t):
             return tgt, up, lo
     return 0, 0, 0
 
-# --- WEBSOCKET HANDLER ---
 async def handler(websocket, path):
     clients.add(websocket)
     try:
-        # Send full profile for the graph
+        # Send graph data immediately
         times = [p['time'] for p in profile_data]
         targets = [p['target'] for p in profile_data]
         uppers = [p['upper'] for p in profile_data]
         lowers = [p['lower'] for p in profile_data]
         
         await websocket.send(json.dumps({
-            "type": "profile",
+            "type": "profile", 
             "profile": {"time": times, "target": targets, "upper": uppers, "lower": lowers}
         }))
         
@@ -155,93 +145,71 @@ async def handler(websocket, path):
             if cmd == 'start':
                 test_state['running'] = True
                 test_state['start_time'] = time.time() - test_state['elapsed']
-                print("CMD: Start")
-            elif cmd == 'stop':
+            elif cmd == 'stop': 
                 test_state['running'] = False
-                print("CMD: Stop")
             elif cmd == 'reset':
                 test_state.update({"running": False, "elapsed": 0, "violations": 0, "is_outside": False})
                 await broadcast({"type": "reset"})
-                print("CMD: Reset")
-            elif cmd == 'manual_speed':
+            elif cmd == 'manual_speed': 
                 test_state['manual_speed'] = float(msg.get('speed', 0))
             elif cmd == 'set_mode':
                 global SIMULATION_MODE
                 SIMULATION_MODE = (msg.get('mode') == 'manual')
-
+                
     except: pass
     finally: clients.remove(websocket)
 
 async def broadcast(msg):
-    if clients:
+    if clients: 
         await asyncio.gather(*[ws.send(json.dumps(msg)) for ws in clients], return_exceptions=True)
 
 async def loop():
     while True:
-        start_loop = time.time()
-        
-        # 1. Calculate Speed
         actual = get_speed()
         test_state['actual_speed'] = actual
         
         if test_state['running']:
-            # 2. Advance Time
             test_state['elapsed'] = time.time() - test_state['start_time']
             t = test_state['elapsed']
-            
-            # 3. Get Limits
             tgt, up, lo = get_target_at_time(t)
             
-            # 4. Check Violation
-            # We use a simple state machine to count "Events"
+            # Violation Logic
             currently_outside = (actual > up) or (actual < lo)
             
-            # IGNORE violations in the first 5 seconds (Grace Period)
+            # Grace period: 5 seconds
             if t > 5.0:
-                # If we just went outside, COUNT IT
                 if currently_outside and not test_state['is_outside']:
                     test_state['violations'] += 1
                     side = "upper" if actual > up else "lower"
-                    print(f"VIOLATION! {actual:.1f} is outside {lo:.1f}-{up:.1f}")
-                    
-                    # Send immediate violation alert
+                    # Send immediate alert
                     await broadcast({
-                        "type": "violation",
-                        "time": t,
-                        "violations": test_state['violations'],
-                        "side": side,
+                        "type": "violation", 
+                        "time": t, 
+                        "violations": test_state['violations'], 
+                        "side": side, 
                         "actual": actual
                     })
             
             test_state['is_outside'] = currently_outside
             
-            # Stop if end of profile
+            # Check end
             if profile_data and t >= profile_data[-1]['time']:
                 test_state['running'] = False
                 await broadcast({"type": "complete", "violations": test_state['violations']})
-
-            # 5. Send Update
-            await broadcast({
-                "type": "update",
-                "time": t,
-                "target": tgt,
-                "upper": up,
-                "lower": lo,
-                "actual": actual,
-                "violations": test_state['violations'],
-                "crossed": False # Handled by "violation" msg type
-            })
             
-        else:
-             # If stopped, just send speed updates so slider works
-             await broadcast({
-                "type": "update",
-                "time": test_state['elapsed'],
-                "actual": actual,
+            # Standard Update
+            await broadcast({
+                "type": "update", "time": t, "target": tgt, 
+                "upper": up, "lower": lo, "actual": actual, 
                 "violations": test_state['violations']
             })
-
-        # Run at 5Hz (0.2s)
+        else:
+             # Send idle update (so slider works)
+             await broadcast({
+                "type": "update", "time": test_state['elapsed'], 
+                "actual": actual, "violations": test_state['violations']
+            })
+            
         await asyncio.sleep(0.2)
 
 async def main():
