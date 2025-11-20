@@ -1,0 +1,250 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Drive Cycle Display</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:8px;font-size:14px}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .card{background:#0c1620;padding:8px;border-radius:6px;box-shadow:0 3px 10px rgba(0,0,0,0.6)}
+    .big{font-size:48px;font-weight:800;color:#7fffd4;text-align:center;width:140px}
+    .small{font-size:11px;color:#9fb0c9}
+    button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
+    .start{background:#7ef27c;color:#000}
+    .stop{background:#ff6b6b;color:#fff}
+    #chartWrap{margin-top:12px;height:520px;padding:6px;border-radius:8px;border:2px solid #032b3f}
+    #legend{display:flex;gap:18px;justify-content:center;margin-bottom:6px}
+    .flash{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px}
+    .danger{background:#441111;color:#ffd8d8}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+</head>
+<body>
+  <div class="row">
+    <div class="card" style="display:flex;gap:18px;align-items:center">
+      <div><div class="small">ACTUAL</div><div id="actual" class="big">0.0</div><div class="small">km/h</div></div>
+      <div><div class="small">TARGET</div><div id="target" style="font-size:20px">0.0</div></div>
+      <div><div class="small">ELAPSED</div><div id="time" style="font-size:20px">0.00</div></div>
+      <div><div class="small">VIOLATIONS</div><div id="viol" style="font-size:24px;font-weight:bold;color:#ff6b6b;background:#2a1010;padding:4px 8px;border-radius:4px;min-width:40px;text-align:center">0</div></div>
+    </div>
+
+    <div class="card" style="flex:1;min-width:580px;display:flex;justify-content:space-between;align-items:center" id="controls">
+      <!-- Center buttons with equal spacing -->
+      <div style="display:flex;gap:40px;align-items:center;flex:1;justify-content:center">
+        <button id="startBtn" class="start" style="padding:12px 20px;font-size:16px;font-weight:bold">Start</button>
+        <button id="stopBtn" class="stop" style="padding:12px 20px;font-size:16px;font-weight:bold">Stop</button>
+        <button id="resetBtn" style="padding:12px 20px;font-size:16px;font-weight:bold;background:#666;color:#fff">Reset</button>
+      </div>
+
+      <!-- Right side controls -->
+      <div style="display:flex;gap:16px;align-items:center">
+        <label><div class="small">MODE</div>
+          <select id="mode"><option value="manual">Manual</option><option value="real">Real</option></select>
+        </label>
+
+        <label><div class="small">MANUAL SPEED</div>
+          <input id="slider" type="range" min="0" max="100" step="0.1" value="0" style="width:200px">
+          <div id="sliderVal" class="small">0.0 km/h</div>
+        </label>
+
+        <label><div class="small">WINDOW (s)</div>
+          <input id="window" type="number" min="5" max="300" value="10" style="width:50px">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div id="chartWrap" class="card">
+    <div id="legend"></div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div style="margin-top:10px">
+    <div id="flash" class="flash" style="display:none"></div>
+    <div id="wsstatus" style="display:inline-block;margin-left:8px">WS: <span id="wsval">—</span></div>
+  </div>
+
+<script>
+const WS_URL = "ws://localhost:8765";
+let ws = null;
+let profile = {time:[], target:[], upper:[], lower:[]};
+let chart = null;
+let windowSeconds = 10;  // Reduced from 20 to 10 for more horizontal zoom
+let leadPct = 0.30; // marker 30% from left
+let markerPoints = []; // persistent red markers
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = ()=> { document.getElementById('wsval').innerText = "open"; };
+  ws.onclose = ()=> { document.getElementById('wsval').innerText = "closed"; setTimeout(connect,1000); };
+  ws.onerror = ()=> document.getElementById('wsval').innerText = "error";
+  ws.onmessage = (ev)=> {
+    try {
+      const obj = JSON.parse(ev.data);
+      handleMsg(obj);
+    } catch(e) { console.warn("bad ws msg", e); }
+  };
+}
+function sendCmd(o){ if (ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
+
+function handleMsg(obj) {
+  if (obj.type === 'profile') {
+    profile = obj.profile;
+    drawProfile();
+  } else if (obj.type === 'update') {
+    // Update all UI elements immediately for responsiveness
+    document.getElementById('actual').innerText = (obj.actual ?? 0).toFixed(1);
+    document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
+    document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
+    
+    // Update violation count (backend uses CMVR/AIS 0.20s rule internally)
+    const violCount = obj.violations ?? 0;
+    document.getElementById('viol').innerText = violCount;
+    
+    // Debug logging to console
+    if (obj.violations > 0 || obj.cmvr_timer > 0) {
+      console.log(`Violations: ${obj.violations}, Timer: ${obj.cmvr_timer}s, Speed: ${obj.actual}, Limits: ${obj.lower}-${obj.upper}, Inside: ${obj.cmvr_compliant}`);
+    }
+    
+    // Flash violation count when it changes
+    const currentViol = parseInt(document.getElementById('viol').getAttribute('data-last') || '0');
+    if (violCount > currentViol) {
+      document.getElementById('viol').style.color = '#ff4d4d';
+      document.getElementById('viol').style.fontWeight = 'bold';
+      setTimeout(() => {
+        document.getElementById('viol').style.color = '';
+        document.getElementById('viol').style.fontWeight = '';
+      }, 500);
+    }
+    document.getElementById('viol').setAttribute('data-last', violCount);
+
+    addPoint(obj.time, obj.actual);
+    if (obj.crossed) {
+      showFlash("VIOLATION #" + violCount + " - " + (obj.cross_side === 'upper' ? 'TOO FAST' : 'TOO SLOW'));
+      addMarker(obj.time, obj.actual, obj.cross_side);
+    }
+  } else if (obj.type === 'reset') {
+    // Clear all chart data and UI elements
+    if (chart) {
+      chart.data.datasets[3].data = [];  // Actual speed data
+      chart.data.datasets[4].data = [];  // Cross markers
+      markerPoints = [];
+      chart.update();
+    }
+    // Reset all UI elements
+    document.getElementById('actual').innerText = "0.0";
+    document.getElementById('target').innerText = "0.0";
+    document.getElementById('time').innerText = "0.00";
+    document.getElementById('viol').innerText = "0";
+    // Reset slider
+    document.getElementById('slider').value = 0;
+    document.getElementById('sliderVal').innerText = "0.0 km/h";
+  } else if (obj.type === 'complete') {
+    alert("Profile complete. Violations: " + obj.violations);
+  }
+}
+
+function drawProfile(){
+  const times = profile.time || [];
+  const tgt = (profile.target||[]).map((v,i)=>({x:times[i], y:v}));
+  const up = (profile.upper||[]).map((v,i)=>({x:times[i], y:v}));
+  const lo = (profile.lower||[]).map((v,i)=>({x:times[i], y:v}));
+  const ctx = document.getElementById('chart').getContext('2d');
+  if (chart) chart.destroy();
+
+  chart = new Chart(ctx, {
+    type:'line',
+    data: {
+      datasets: [
+        { label:'Upper', data: up, borderColor:'#ff4d4d', borderWidth:2, pointRadius:0, fill:false },
+        { label:'Lower', data: lo, borderColor:'#4da6ff', borderWidth:2, pointRadius:0, fill:'-1' },
+        { label:'Target', data: tgt, borderColor:'#40e37a', borderWidth:2.5, pointRadius:0, fill:false, tension:0.2 },
+        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.3, showLine:true },
+        { label:'Crosses', data: [], type:'scatter', pointStyle:'triangle', pointRadius:8, showLine:false }
+      ]
+    },
+    options: {
+      animation:false,
+      maintainAspectRatio:false,
+      scales: {
+        x: { type:'linear', title:{display:true,text:'Time (s)'} },
+        y: { min:0, max: 50, title:{display:true,text:'Speed (km/h)'} }
+      },
+      plugins: { legend: { display:true } }
+    }
+  });
+
+  document.getElementById('legend').innerHTML = '<span style="color:#ff4d4d">■ Upper</span> &nbsp; <span style="color:#4da6ff">■ Lower</span> &nbsp; <span style="color:#40e37a">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span> &nbsp; <span style="color:#ff9999">▲ Cross</span>';
+}
+
+function addPoint(t, actual){
+  if (!chart || t===null || t===undefined) return;
+  chart.data.datasets[3].data.push({x:t, y:actual});
+  // prune
+  const keepMin = t - (windowSeconds + 10);
+  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => p.x >= keepMin || typeof p.x !== 'number'));
+  // auto scroll with lead
+  let vmin = Math.max(0, t - (windowSeconds * leadPct));
+  let vmax = vmin + windowSeconds;
+  chart.options.scales.x.min = vmin;
+  chart.options.scales.x.max = vmax;
+  chart.update('none');
+}
+
+function addMarker(t, actual, side) {
+  if (!chart) return;
+  const dataset = chart.data.datasets[4];
+  const color = (side === 'upper') ? '#ff2b2b' : '#ff8b2b';
+  // store marker (Chart.js scatter)
+  dataset.data.push({x:t, y: actual});
+  chart.update('none');
+}
+
+function showFlash(text) {
+  const el = document.getElementById('flash');
+  el.innerText = text;
+  el.style.display = 'inline-block';
+  el.className = 'flash danger';
+  setTimeout(()=>{ el.style.display='none'; }, 900);
+}
+
+// UI wiring with improved reset functionality
+document.getElementById('startBtn').onclick = ()=> sendCmd({cmd:'start'});
+document.getElementById('stopBtn').onclick = ()=> sendCmd({cmd:'stop'});
+document.getElementById('resetBtn').onclick = ()=> {
+  // Send reset command to backend
+  sendCmd({cmd:'reset'});
+  // Also reset local state immediately for responsiveness
+  if (chart) {
+    chart.data.datasets[3].data = [];
+    chart.data.datasets[4].data = [];
+    markerPoints = [];
+    chart.update();
+  }
+  // Reset UI elements
+  document.getElementById('actual').innerText = "0.0";
+  document.getElementById('target').innerText = "0.0";
+  document.getElementById('time').innerText = "0.00";
+  document.getElementById('viol').innerText = "0";
+  document.getElementById('viol').setAttribute('data-last', '0');
+  document.getElementById('slider').value = 0;
+  document.getElementById('sliderVal').innerText = "0.0 km/h";
+};
+document.getElementById('mode').onchange = (e)=> sendCmd({cmd:'set_mode', mode: e.target.value});
+const slider = document.getElementById('slider');
+const sliderVal = document.getElementById('sliderVal');
+slider.oninput = (e)=> {
+  const v = parseFloat(e.target.value);
+  sliderVal.innerText = v.toFixed(1) + " km/h";
+  sendCmd({cmd:'manual_speed', speed: v});
+};
+document.getElementById('window').onchange = (e)=> {
+  let v = parseFloat(e.target.value) || 10;
+  windowSeconds = Math.max(5, Math.min(300, v));
+};
+
+connect();
+</script>
+</body>
+</html>
