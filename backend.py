@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-backend.py - Drive cycle websocket backend with real sensor input (1 pulse per rotation)
+backend.py - Drive cycle websocket backend
+Violation policy: count IMMEDIATELY when actual crosses upper OR lower (inside->outside),
+with a configurable debounce period to avoid double-counting due to bouncing.
 
-Usage (example):
-  sudo python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --min_violation 1.0 --debug
+Usage example:
+  sudo python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.5 --debug
 
 Dependencies:
   pip install pandas numpy websockets
-Run with sudo on Raspberry Pi when using GPIO.
 """
 
 import asyncio
@@ -33,14 +34,12 @@ try:
 except Exception:
     GPIO_AVAILABLE = False
 
-# ----------------- Config defaults -----------------
+# Defaults
 PORT = 8765
 TICK_HZ = 5
 GRACE_SECONDS = 5.0
-VIOLATION_MIN_DURATION = 1.0
 DEFAULT_TOL = 2.0
 LOG_DIR = "logs"
-# ----------------------------------------------------
 
 class PulseCounter:
     """Thread-safe deque of monotonic timestamps for recent pulses."""
@@ -64,7 +63,6 @@ class PulseCounter:
         with self.lock:
             while self.deque and self.deque[0] < now - self.keep_seconds:
                 self.deque.popleft()
-            # count entries >= cutoff (iterate from right for early break)
             cnt = 0
             for ts in reversed(self.deque):
                 if ts >= cutoff:
@@ -79,15 +77,18 @@ class PulseCounter:
 
 class DriveBackend:
     def __init__(self, profile_df, tick_hz=TICK_HZ, grace=GRACE_SECONDS,
-                 min_violation_duration=VIOLATION_MIN_DURATION, verbose=False,
-                 pulses_per_rotation=1, wheel_circumference_m=1.94,
-                 gpio_pin=17, use_gpio=False):
+                 verbose=False, pulses_per_rotation=1, wheel_circumference_m=1.94,
+                 gpio_pin=17, use_gpio=False, debounce=0.5):
         self.profile = profile_df.copy()
         self.tick_hz = tick_hz
         self.dt = 1.0 / tick_hz
         self.grace = grace
-        self.min_violation_duration = min_violation_duration
         self.verbose = verbose
+
+        # violation policy: immediate crossing with debounce
+        self.debounce = float(debounce)
+        self.last_cross_time = None    # monotonic() time of last counted crossing
+        self.prev_inside = True        # whether previous sample was inside the band
 
         # runtime state
         self.running = False
@@ -96,9 +97,6 @@ class DriveBackend:
 
         # violation tracking
         self.violations = 0
-        self._in_violation = False
-        self._violation_timer_start = None
-        self._violation_counted_for_event = False
 
         # speed source
         self.mode = "manual"
@@ -112,7 +110,7 @@ class DriveBackend:
         self.gpio_pin = int(gpio_pin)
         self.use_gpio = bool(use_gpio) and GPIO_AVAILABLE
 
-        # websocket clients
+        # websocket
         self.clients = set()
 
         # profile arrays
@@ -128,7 +126,7 @@ class DriveBackend:
         self.csv_writer = None
         self.current_test_id = None
 
-        # GPIO setup
+        # gpio init
         if self.use_gpio:
             self._setup_gpio()
 
@@ -136,7 +134,6 @@ class DriveBackend:
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
-            # falling edge: sensor NPN pulls to GND on detection
             GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._pulse_callback, bouncetime=10)
             if self.verbose:
                 print(f"[GPIO] Listening on BCM{self.gpio_pin}")
@@ -145,7 +142,6 @@ class DriveBackend:
             self.use_gpio = False
 
     def _pulse_callback(self, channel):
-        # Called by RPi.GPIO in a separate thread
         self.pulse_counter.add_pulse()
         if self.verbose:
             print(f"[GPIO] pulse at {time.monotonic():.3f}")
@@ -160,7 +156,7 @@ class DriveBackend:
         lower = float(np.interp(t, self.times, self.lowers))
         return target, upper, lower
 
-    # websocket registration
+    # websocket
     async def register(self, websocket):
         self.clients.add(websocket)
         prof = {
@@ -228,9 +224,9 @@ class DriveBackend:
             if not self.running:
                 self.running = True
                 self.start_wall = time.monotonic() - self.elapsed
-                self._in_violation = False
-                self._violation_timer_start = None
-                self._violation_counted_for_event = False
+                # reset crossing tracking on start
+                self.last_cross_time = None
+                self.prev_inside = True
                 self._open_log()
                 if self.verbose:
                     print("[CMD] Start")
@@ -244,9 +240,8 @@ class DriveBackend:
             self.running = False
             self.elapsed = 0.0
             self.violations = 0
-            self._in_violation = False
-            self._violation_timer_start = None
-            self._violation_counted_for_event = False
+            self.last_cross_time = None
+            self.prev_inside = True
             self._close_log()
             await self.broadcast({"type": "reset"})
             if self.verbose:
@@ -263,6 +258,7 @@ class DriveBackend:
             except Exception:
                 pass
 
+    # logging
     def _open_log(self):
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         fname = f"test_{ts}.csv"
@@ -299,10 +295,7 @@ class DriveBackend:
         self.current_test_id = None
 
     def compute_speed_from_pulses(self):
-        """
-        Compute speed (km/h) using pulses counted in last 1 second window.
-        speed_kmh = (pulses_per_second / ppr) * circumference_m * 3.6
-        """
+        """Compute speed (km/h) using pulses in last 1s window (responsive)."""
         window = 1.0
         pulses = self.pulse_counter.count_last(window)
         pulses_per_second = pulses / window
@@ -312,7 +305,7 @@ class DriveBackend:
         return round(speed_kmh, 3)
 
     async def run_loop(self):
-        print(f"[BACKEND] Loop {self.tick_hz}Hz. profile_end={self.profile_end}s grace={self.grace}s min_violation={self.min_violation_duration}s GPIO={'on' if self.use_gpio else 'off'} ppr={self.ppr} circ={self.circ}m")
+        print(f"[BACKEND] Loop {self.tick_hz}Hz. profile_end={self.profile_end}s grace={self.grace}s debounce={self.debounce}s GPIO={'on' if self.use_gpio else 'off'} ppr={self.ppr} circ={self.circ}m")
         while True:
             t0 = time.monotonic()
             if self.running:
@@ -328,34 +321,35 @@ class DriveBackend:
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
-                # violation detection
-                out_of_range = (self.actual_speed < lower) or (self.actual_speed > upper)
+                # immediate crossing detection logic
+                # inside => outside transition triggers a violation (instant), subject to debounce
+                inside = (self.actual_speed >= lower) and (self.actual_speed <= upper)
+                # check crossing event: previously inside and now outside
+                crossed = (not inside) and self.prev_inside
 
+                now = time.monotonic()
                 if self.elapsed <= self.grace:
-                    self._in_violation = False
-                    self._violation_timer_start = None
-                    self._violation_counted_for_event = False
+                    # in grace period: don't count crossings, but still track prev_inside
+                    if self.verbose and crossed:
+                        print(f"[VIOL] crossed during grace at elapsed={self.elapsed:.2f}s (ignored)")
+                    # update prev_inside but don't count
+                    self.prev_inside = inside
                 else:
-                    if out_of_range and not self._in_violation:
-                        self._in_violation = True
-                        self._violation_timer_start = time.monotonic()
-                        self._violation_counted_for_event = False
-                        if self.verbose:
-                            print(f"[VIOL] started out-of-range at {self.elapsed:.2f}s actual={self.actual_speed} band=({lower},{upper})")
-                    elif out_of_range and self._in_violation:
-                        if (not self._violation_counted_for_event) and (time.monotonic() - (self._violation_timer_start or time.monotonic()) >= self.min_violation_duration):
+                    if crossed:
+                        # check debounce: if last_cross_time is recent, ignore
+                        if (self.last_cross_time is None) or (now - self.last_cross_time >= self.debounce):
                             self.violations += 1
-                            self._violation_counted_for_event = True
+                            self.last_cross_time = now
                             if self.verbose:
-                                print(f"[VIOL] counted #{self.violations} at {self.elapsed:.2f}s")
-                    else:
-                        if self._in_violation or self._violation_counted_for_event:
+                                side = "upper" if self.actual_speed > upper else "lower"
+                                print(f"[VIOL] CROSS violation #{self.violations} at elapsed={self.elapsed:.2f}s actual={self.actual_speed} (crossed {side} bound { 'upper' if self.actual_speed>upper else 'lower'})")
+                        else:
                             if self.verbose:
-                                print(f"[VIOL] returned inside at {self.elapsed:.2f}s actual={self.actual_speed}")
-                        self._in_violation = False
-                        self._violation_timer_start = None
-                        self._violation_counted_for_event = False
+                                print(f"[VIOL] crossed but debounce active (dt={now-self.last_cross_time:.3f}s) - ignored")
+                    # update prev_inside for next iteration
+                    self.prev_inside = inside
 
+                # prepare update message
                 msg = {
                     "type": "update",
                     "time": round(self.elapsed, 2),
@@ -367,9 +361,11 @@ class DriveBackend:
                     "running": True
                 }
 
+                # log & broadcast
                 self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
                 await self.broadcast(msg)
 
+                # stop at profile end
                 if self.elapsed >= self.profile_end:
                     await self.broadcast({"type": "complete", "time": round(self.elapsed, 2), "violations": int(self.violations)})
                     self.running = False
@@ -382,7 +378,7 @@ class DriveBackend:
 
 # ---------------- main ----------------
 async def main(profile_path, host="0.0.0.0", port=PORT, tol=DEFAULT_TOL, rebase=False,
-               verbose=False, min_violation=VIOLATION_MIN_DURATION, gpio_pin=17, circ=1.94, ppr=1, use_gpio=False):
+               verbose=False, gpio_pin=17, circ=1.94, ppr=1, use_gpio=False, debounce=0.5):
     df = pd.read_csv(profile_path)
     if 'time' not in df.columns or 'target' not in df.columns:
         raise SystemExit("Profile CSV must contain at least 'time' and 'target' columns.")
@@ -397,9 +393,9 @@ async def main(profile_path, host="0.0.0.0", port=PORT, tol=DEFAULT_TOL, rebase=
         df['time'] = (df['time'] - t0v).astype(float)
         print(f"[MAIN] Rebased profile by subtracting {t0v} -> new start {df['time'].iloc[0]}s")
 
-    backend = DriveBackend(df, tick_hz=TICK_HZ, grace=GRACE_SECONDS, min_violation_duration=min_violation,
-                           verbose=verbose, pulses_per_rotation=ppr, wheel_circumference_m=circ,
-                           gpio_pin=gpio_pin, use_gpio=use_gpio)
+    backend = DriveBackend(df, tick_hz=TICK_HZ, grace=GRACE_SECONDS, verbose=verbose,
+                           pulses_per_rotation=ppr, wheel_circumference_m=circ,
+                           gpio_pin=gpio_pin, use_gpio=use_gpio, debounce=debounce)
 
     server = await websockets.serve(lambda ws, path=None: backend.handler(ws, path), host, port)
     print(f"[MAIN] Websocket server running on ws://{host}:{port}   GPIO={'on' if backend.use_gpio else 'off'}")
@@ -437,19 +433,19 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=PORT)
     p.add_argument('--tol', type=float, default=DEFAULT_TOL)
     p.add_argument('--rebase', action='store_true')
-    p.add_argument('--debug', action='store_true')
-    p.add_argument('--min_violation', type=float, default=VIOLATION_MIN_DURATION)
+    p.add_argument('--debug', action='store_true', help='verbose prints')
     p.add_argument('--gpio-pin', type=int, default=17, help='BCM pin for sensor input')
     p.add_argument('--circ', type=float, default=1.94, help='wheel circumference (meters)')
     p.add_argument('--ppr', type=float, default=1.0, help='pulses per wheel rotation (1)')
     p.add_argument('--use-gpio', action='store_true', help='enable reading from Raspberry Pi GPIO')
+    p.add_argument('--debounce', type=float, default=0.5, help='seconds to ignore repeated crossings after a counted crossing')
     args = p.parse_args()
 
     print("[MAIN] Starting backend with profile:", args.profile)
     try:
         asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase,
-                         verbose=args.debug, min_violation=args.min_violation, gpio_pin=args.gpio_pin,
-                         circ=args.circ, ppr=args.ppr, use_gpio=args.use_gpio))
+                         verbose=args.debug, gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr,
+                         use_gpio=args.use_gpio, debounce=args.debounce))
     except KeyboardInterrupt:
         print("Interrupted")
     except Exception as e:
