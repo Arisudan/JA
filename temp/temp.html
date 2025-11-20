@@ -1,0 +1,271 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Drive Cycle Display (download + full-range)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:8px;font-size:14px}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .card{background:#0c1620;padding:8px;border-radius:6px;box-shadow:0 3px 10px rgba(0,0,0,0.6)}
+    .big{font-size:72px;font-weight:900;color:#7fffd4;text-align:center;width:200px} /* larger actual */
+    .target{font-size:28px;font-weight:700;color:#a8ffd9} /* larger target */
+    .small{font-size:11px;color:#9fb0c9}
+    button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
+    .start{background:#7ef27c;color:#000}
+    .stop{background:#ff6b6b;color:#fff}
+    #chartWrap{margin-top:12px;height:520px;padding:6px;border-radius:8px;border:2px solid #032b3f}
+    #legend{display:flex;gap:18px;justify-content:center;margin-bottom:6px}
+    .flash{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px}
+    .danger{background:#441111;color:#ffd8d8}
+    .controls-right { display:flex; gap:10px; align-items:center }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+</head>
+<body>
+  <div class="row">
+    <div class="card" style="display:flex;gap:18px;align-items:center">
+      <div>
+        <div class="small">ACTUAL</div>
+        <div id="actual" class="big">0.0</div>
+        <div class="small">km/h</div>
+      </div>
+      <div>
+        <div class="small">TARGET</div>
+        <div id="target" class="target">0.0</div>
+      </div>
+      <div>
+        <div class="small">ELAPSED</div>
+        <div id="time" style="font-size:20px">0.00</div>
+      </div>
+      <div>
+        <div class="small">VIOLATIONS</div>
+        <div id="viol" style="font-size:24px;font-weight:bold;color:#ff6b6b;background:#2a1010;padding:4px 8px;border-radius:4px;min-width:40px;text-align:center">0</div>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1;min-width:580px;display:flex;justify-content:space-between;align-items:center" id="controls">
+      <div style="display:flex;gap:20px;align-items:center">
+        <button id="startBtn" class="start" style="padding:12px 20px;font-size:16px;font-weight:bold">Start</button>
+        <button id="stopBtn" class="stop" style="padding:12px 20px;font-size:16px;font-weight:bold">Stop</button>
+        <button id="resetBtn" style="padding:12px 20px;font-size:16px;font-weight:bold;background:#666;color:#fff">Reset</button>
+
+        <button id="downloadPng" title="Download chart PNG">Download PNG</button>
+        <button id="downloadCsv" title="Download displayed data CSV">Download CSV</button>
+      </div>
+
+      <div class="controls-right">
+        <label><div class="small">MODE</div>
+          <select id="mode"><option value="manual">Manual</option><option value="real">Real</option></select>
+        </label>
+
+        <label><div class="small">MANUAL SPEED</div>
+          <input id="slider" type="range" min="0" max="100" step="0.1" value="0" style="width:200px">
+          <div id="sliderVal" class="small">0.0 km/h</div>
+        </label>
+
+        <label><div class="small">WINDOW (s)</div>
+          <input id="window" type="number" min="5" max="300" value="10" style="width:50px">
+        </label>
+
+        <label style="display:flex;align-items:center;gap:6px"><input id="viewFull" type="checkbox"> <span class="small">View full profile</span></label>
+      </div>
+    </div>
+  </div>
+
+  <div id="chartWrap" class="card">
+    <div id="legend"></div>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div style="margin-top:10px">
+    <div id="flash" class="flash" style="display:none"></div>
+    <div id="wsstatus" style="display:inline-block;margin-left:8px">WS: <span id="wsval">—</span></div>
+  </div>
+
+<script>
+const WS_URL = "ws://localhost:8765";
+let ws = null;
+let profile = {time:[], target:[], upper:[], lower:[]};
+let chart = null;
+let windowSeconds = 10;
+let leadPct = 0.30;
+let markerDatasetIndex = 4;
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = ()=> { document.getElementById('wsval').innerText = "open"; };
+  ws.onclose = ()=> { document.getElementById('wsval').innerText = "closed"; setTimeout(connect,1000); };
+  ws.onerror = (e)=> { document.getElementById('wsval').innerText = "error"; console.error(e); };
+  ws.onmessage = (ev)=> {
+    try {
+      const obj = JSON.parse(ev.data);
+      handleMsg(obj);
+    } catch(e) { console.warn("bad ws msg", e); }
+  };
+}
+function sendCmd(o){ if (ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
+
+function handleMsg(obj) {
+  if (obj.type === 'profile') {
+    profile = obj.profile;
+    drawProfile();
+    // set X axis to full profile range initially (so it covers up to 1391)
+    const end = profile.time && profile.time.length ? profile.time[profile.time.length-1] : null;
+    if (end !== null && chart) {
+      chart.options.scales.x.min = 0;
+      chart.options.scales.x.max = end;
+      chart.update('none');
+    }
+  } else if (obj.type === 'update') {
+    document.getElementById('actual').innerText = (obj.actual ?? 0).toFixed(1);
+    document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
+    document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
+    const violCount = obj.violations ?? 0;
+    const last = parseInt(document.getElementById('viol').getAttribute('data-last') || '0');
+    if (violCount !== last) {
+      document.getElementById('viol').innerText = violCount;
+      document.getElementById('viol').setAttribute('data-last', violCount);
+      // quick highlight
+      document.getElementById('viol').style.transform = 'scale(1.08)';
+      setTimeout(()=> document.getElementById('viol').style.transform = '', 220);
+    }
+
+    addPoint(obj.time, obj.actual);
+    if (obj.crossed) {
+      addMarker(obj.time, obj.actual, obj.cross_side);
+      flashOnce("Violation #" + violCount + " (" + (obj.cross_side||'') + ")");
+    }
+  } else if (obj.type === 'reset') {
+    if (chart) {
+      chart.data.datasets[3].data = [];
+      chart.data.datasets[4].data = [];
+      chart.update();
+    }
+    document.getElementById('actual').innerText = "0.0";
+    document.getElementById('target').innerText = "0.0";
+    document.getElementById('time').innerText = "0.00";
+    document.getElementById('viol').innerText = "0";
+    document.getElementById('viol').setAttribute('data-last', '0');
+  } else if (obj.type === 'complete') {
+    alert("Profile complete. Violations: " + obj.violations);
+  }
+}
+
+function drawProfile(){
+  const times = profile.time || [];
+  const tgt = (profile.target||[]).map((v,i)=>({x:times[i], y:v}));
+  const up = (profile.upper||[]).map((v,i)=>({x:times[i], y:v}));
+  const lo = (profile.lower||[]).map((v,i)=>({x:times[i], y:v}));
+  const ctx = document.getElementById('chart').getContext('2d');
+  if (chart) chart.destroy();
+
+  chart = new Chart(ctx, {
+    type:'line',
+    data: {
+      datasets: [
+        { label:'Upper', data: up, borderColor:'#ff4d4d', borderWidth:2, pointRadius:0, fill:false },
+        { label:'Lower', data: lo, borderColor:'#4da6ff', borderWidth:2, pointRadius:0, fill:'-1' },
+        { label:'Target', data: tgt, borderColor:'#40e37a', borderWidth:2.5, pointRadius:0, fill:false, tension:0.2 },
+        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.3, showLine:true },
+        { label:'Violations', data: [], type:'scatter', pointStyle:'triangle', pointRadius:9, showLine:false }
+      ]
+    },
+    options: {
+      animation:false,
+      maintainAspectRatio:false,
+      scales: {
+        x: { type:'linear', title:{display:true,text:'Time (s)'}, ticks: { maxRotation: 0 } },
+        y: { min:0, max:60, title:{display:true,text:'Speed (km/h)'} }  /* y max set to 60 as requested */
+      },
+      plugins: { legend: { display:true } }
+    }
+  });
+
+  document.getElementById('legend').innerHTML = '<span style="color:#ff4d4d">■ Upper</span> &nbsp; <span style="color:#4da6ff">■ Lower</span> &nbsp; <span style="color:#40e37a">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span> &nbsp; <span style="color:#ff9999">▲ Violation</span>';
+}
+
+function addPoint(t, actual){
+  if (!chart || t===null || t===undefined) return;
+  chart.data.datasets[3].data.push({x:t, y:actual});
+  // prune older points to keep canvas light
+  const keepMin = t - (windowSeconds + 10);
+  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => (typeof p.x !== 'number') || p.x >= keepMin));
+  // auto scroll if not viewing full profile
+  const viewFull = document.getElementById('viewFull').checked;
+  if (!viewFull) {
+    let vmin = Math.max(0, t - (windowSeconds * leadPct));
+    let vmax = vmin + windowSeconds;
+    chart.options.scales.x.min = vmin;
+    chart.options.scales.x.max = vmax;
+  } else {
+    // keep full-range (set max to profile end)
+    if (profile.time && profile.time.length) {
+      chart.options.scales.x.min = 0;
+      chart.options.scales.x.max = profile.time[profile.time.length - 1];
+    }
+  }
+  chart.update('none');
+}
+
+function addMarker(t, actual, side) {
+  if (!chart) return;
+  const ds = chart.data.datasets[4];
+  ds.data.push({x:t, y: actual});
+  chart.update('none');
+}
+
+function flashOnce(text){
+  const el = document.getElementById('flash');
+  el.innerText = text;
+  el.style.display = 'inline-block';
+  el.className = 'flash danger';
+  setTimeout(()=>{ el.style.display='none'; }, 900);
+}
+
+// Download PNG
+document.getElementById('downloadPng').onclick = function(){
+  if(!chart) return;
+  const url = chart.toBase64Image();
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'drive_cycle_chart.png';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+};
+
+// Download CSV of currently plotted 'Actual' dataset
+document.getElementById('downloadCsv').onclick = function(){
+  if(!chart) return;
+  const points = chart.data.datasets[3].data.slice();
+  // sort by x
+  points.sort((a,b)=> a.x - b.x);
+  let csv = 'time_s,actual_kmh\n';
+  points.forEach(p => { csv += `${p.x},${p.y}\n`; });
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'actual_speed_data.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+// UI wiring
+document.getElementById('startBtn').onclick = ()=> sendCmd({cmd:'start'});
+document.getElementById('stopBtn').onclick = ()=> sendCmd({cmd:'stop'});
+document.getElementById('resetBtn').onclick = ()=> { sendCmd({cmd:'reset'}); if (chart){ chart.data.datasets[3].data = []; chart.data.datasets[4].data = []; chart.update(); } document.getElementById('viol').innerText='0'; };
+document.getElementById('mode').onchange = (e)=> sendCmd({cmd:'set_mode', mode: e.target.value});
+const slider = document.getElementById('slider');
+const sliderVal = document.getElementById('sliderVal');
+slider.oninput = (e)=> { const v=parseFloat(e.target.value); sliderVal.innerText = v.toFixed(1) + " km/h"; sendCmd({cmd:'manual_speed', speed: v}); };
+document.getElementById('window').onchange = (e)=> { let v = parseFloat(e.target.value) || 10; windowSeconds = Math.max(5, Math.min(300, v)); };
+document.getElementById('viewFull').onchange = (e)=> { /* on change we either freeze to full or resume scrolling */ if(chart && profile.time && profile.time.length){ if(e.target.checked){ chart.options.scales.x.min = 0; chart.options.scales.x.max = profile.time[profile.time.length-1]; } } chart.update('none'); };
+
+connect();
+</script>
+</body>
+</html>
