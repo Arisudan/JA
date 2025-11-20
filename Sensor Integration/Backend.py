@@ -36,7 +36,7 @@ except Exception:
 
 # Defaults
 PORT = 8765
-TICK_HZ = 5
+TICK_HZ = 10  # Increased from 5 to 10 Hz for smoother real-time sensor response
 LOG_DIR = "logs"
 DEFAULT_TOL = 2.0
 GRACE_SECONDS = 0.0   # default 0 so crossings count immediately; adjust via CLI if needed
@@ -125,18 +125,29 @@ class DriveBackend:
     def _setup_gpio(self):
         try:
             GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
-            GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=10)
+            GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # Enable pull-up for better signal stability
+            # Reduced bouncetime from 10ms to 5ms for more responsive sensor detection
+            GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=5)
             if self.debug:
-                print(f"[GPIO] configured BCM{self.gpio_pin}")
+                print(f"[GPIO] configured BCM{self.gpio_pin} with pull-up resistor and 5ms debounce")
         except Exception as e:
             print("[GPIO] setup failed:", e)
             self.use_gpio = False
 
     def _gpio_cb(self, ch):
-        self.pulse_counter.add()
+        pulse_time = time.monotonic()
+        self.pulse_counter.add(pulse_time)
+        
+        # Enhanced debugging for GPIO pin 17 sensor pulses
         if self.debug:
-            print(f"[GPIO] pulse at {time.monotonic():.3f}")
+            # Calculate time since last pulse for RPM/speed debugging
+            if hasattr(self, '_last_pulse_time'):
+                pulse_interval = pulse_time - self._last_pulse_time
+                freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
+                print(f"[GPIO17] Pulse: {pulse_time:.3f}s, Interval: {pulse_interval*1000:.1f}ms, Freq: {freq:.1f}Hz")
+            else:
+                print(f"[GPIO17] First pulse detected at {pulse_time:.3f}s")
+            self._last_pulse_time = pulse_time
 
     def interp_profile(self, t):
         if t <= self.times[0]:
@@ -259,14 +270,23 @@ class DriveBackend:
         self.logfile = None
         self.csv_writer = None
 
-    # compute speed from pulses (1s window)
+    # compute speed from pulses (optimized for real-time response)
     def compute_speed(self):
-        window = 1.0
+        # Use shorter window for more responsive real-time updates
+        window = 0.5  # Reduced from 1.0 to 0.5 seconds for faster response
         pulses = self.pulse_counter.count_recent(window)
         pps = pulses / window
         rps = pps / max(1.0, self.ppr)
         speed_mps = rps * self.circ
-        return speed_mps * 3.6
+        speed_kmh = speed_mps * 3.6
+        
+        # Apply simple smoothing for stability while maintaining responsiveness
+        if hasattr(self, '_prev_computed_speed'):
+            # 70% new reading, 30% previous (smooth but responsive)
+            speed_kmh = 0.7 * speed_kmh + 0.3 * self._prev_computed_speed
+        self._prev_computed_speed = speed_kmh
+        
+        return speed_kmh
 
     async def broadcast(self, obj):
         if not self.clients: return
@@ -295,8 +315,21 @@ class DriveBackend:
                 # pick speed
                 if self.mode == "manual" or not self.use_gpio:
                     self.actual_speed = float(self.manual_speed)
+                    if self.debug and self.mode == "manual":
+                        # Only log manual speed changes occasionally to avoid spam
+                        if hasattr(self, '_last_manual_log') and time.monotonic() - self._last_manual_log < 2.0:
+                            pass
+                        else:
+                            self._last_manual_log = time.monotonic()
+                            print(f"[MANUAL] Speed set to {self.actual_speed:.1f} km/h")
                 else:
+                    # Real sensor mode - compute speed from GPIO pulses
+                    prev_speed = getattr(self, '_prev_sensor_speed', 0.0)
                     self.actual_speed = self.compute_speed()
+                    self._prev_sensor_speed = self.actual_speed
+                    
+                    if self.debug and abs(self.actual_speed - prev_speed) > 0.5:
+                        print(f"[SENSOR] Real-time speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f})")
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
