@@ -2,295 +2,59 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>Drive Cycle - Rider Display</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no" />
+  <title>Drive Cycle - Pi Rider Display</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { 
-      background: #06060a; 
-      color: #eaeaea; 
-      font-family: "Segoe UI", "Consolas", Arial, sans-serif; 
-      margin: 0; 
-      padding: 8px;
-      overflow-x: hidden;
-    }
-    
-    /* 7-inch landscape display optimization */
-    @media screen and (max-width: 1024px) and (max-height: 768px) {
-      body { padding: 6px; }
-      .compact-layout { font-size: 0.9em; }
-    }
-    
-    #top { display: flex; gap: 10px; align-items: center; flex-wrap: nowrap; }
-    
-    /* Enhanced metric cards with green theme like dho.py */
-    .card { 
-      background: #0b0b0d; 
-      padding: 12px; 
-      border-radius: 10px; 
-      border: 1px solid #303030;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.7);
-    }
-    
-    .metric-box {
-      background-color: #12341f;
-      border-radius: 6px;
-      padding: 6px 8px;
-      border: 1px solid #2f6b3f;
-      margin: 2px 0;
-      text-align: center;
-      min-width: 85px;
-      flex: 1;
-    }
-    
-    .metric-label {
-      font-size: 9px;
-      color: #9fb0c9;
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-      text-transform: uppercase;
-      margin-bottom: 1px;
-      line-height: 1.1;
-    }
-    
-    .metric-value {
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-      color: #dfffe0;
-      line-height: 1.1;
-    }
-    
-    #speed { 
-      font-size: 32px; 
-      color: #2ecc71; 
-      font-weight: 800; 
-      font-family: "Consolas", monospace;
-    }
-    
-    #target, #time, #viol { 
-      font-size: 18px; 
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-    }
-    
-    #controls { 
-      margin-left: 10px; 
-      display: flex; 
-      gap: 6px; 
-      align-items: center;
-      background: #0b0b0d;
-      padding: 8px;
-      border-radius: 8px;
-      border: 1px solid #303030;
-      flex-wrap: wrap;
-    }
-    
-    #canvas-wrap { 
-      margin-top: 8px; 
-      background: #050507; 
-      padding: 6px; 
-      border-radius: 8px; 
-      height: 320px; 
-      border: 2px solid #ff4d4d;
-    }
-    
-    #chart { width: 100%; height: 100%; display: block; }
-    
-    /* Enhanced buttons matching dho.py style */
-    .btn { 
-      padding: 8px 12px;
-      background-color: #222;
-      border: 2px solid #444;
-      border-radius: 6px;
-      font-weight: bold;
-      font-size: 11px;
-      font-family: "Consolas", monospace;
-      color: white;
-      cursor: pointer;
-      min-width: 70px;
-      transition: all 0.2s ease;
-    }
-    
-    .btn:hover { background-color: #333; }
-    .btn.start { background-color: #16a085; border-color: #16a085; }
-    .btn.stop { background-color: #c0392b; border-color: #c0392b; }
-    
-    #slider { 
-      width: 200px;
-      height: 6px;
-      background: #333;
-      border-radius: 3px;
-    }
-    
-    .small { 
-      font-size: 11px; 
-      color: #9fb0c9;
-      font-family: "Consolas", monospace;
-    }
-    
-    .label { 
-      font-size: 11px; 
-      color: #e6e6e6;
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-      margin-bottom: 4px;
-      text-transform: uppercase;
-    }
-    
-    #right-controls { 
-      margin-left: auto; 
-      display: flex; 
-      gap: 8px; 
-      align-items: center;
-      flex-wrap: wrap;
-    }
-    
-    #status { 
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-      color: #9fb0c9; 
-      font-size: 12px;
-    }
-    
-    #file-upload { 
-      display: flex; 
-      flex-direction: column;
-      align-items: center; 
-      gap: 6px;
-    }
-    
-    #csvFile { display: none; }
-    
-    .file-btn { 
-      padding: 8px 12px;
-      background: #2980b9;
-      color: white;
-      border: 2px solid #3498db;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 12px;
-      font-family: "Consolas", monospace;
-      font-weight: bold;
-      transition: all 0.2s ease;
-    }
-    
-    .file-btn:hover { background: #3498db; }
-    
-    #fileName { 
-      font-size: 10px;
-      color: #dfffe0;
-      font-family: "Consolas", monospace;
-      max-width: 120px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      background: #12341f;
-      padding: 2px 6px;
-      border-radius: 4px;
-      border: 1px solid #2f6b3f;
-    }
-    
-    /* Input styling optimized for touch */
-    input[type=\"number\"], select {
-      background: #222;
-      border: 1px solid #444;
-      border-radius: 4px;
-      color: #eaeaea;
-      padding: 8px;
-      font-family: \"Consolas\", monospace;
-      font-size: 11px;
-      min-height: 30px;
-      touch-action: manipulation;
-    }
-    
-    select {
-      font-size: 11px;
-    }
-    
-    /* Range slider optimization for touch */
-    input[type=\"range\"] {
-      -webkit-appearance: none;
-      appearance: none;
-      height: 8px;
-      background: #333;
-      border-radius: 4px;
-      outline: none;
-    }
-    
-    input[type=\"range\"]::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 20px;
-      height: 20px;
-      background: #2ecc71;
-      border-radius: 50%;
-      cursor: pointer;
-      border: 2px solid #fff;
-    }
-    
-    input[type=\"range\"]::-moz-range-thumb {
-      width: 20px;
-      height: 20px;
-      background: #2ecc71;
-      border-radius: 50%;
-      cursor: pointer;
-      border: 2px solid #fff;
-    }
-    
-    /* Touch-friendly button sizing */
-    .btn, .file-btn {
-      min-height: 36px;
-      touch-action: manipulation;
-      -webkit-tap-highlight-color: transparent;
-    }
-    
-    /* Prevent zoom on input focus */
-    input, select, button {
-      font-size: 16px;
-    }
-    
-    @media screen and (max-width: 1024px) {
-      input, select, button {
-        font-size: 11px;
-      }
-    }
+    body { background:#061018; color:#dfe9f3; font-family: "Segoe UI", Arial, sans-serif; margin:0; padding:10px; }
+    #top { display:flex; gap:12px; align-items:center; }
+    .card { background:#0d1820; padding:10px; border-radius:8px; box-shadow:0 3px 10px rgba(0,0,0,0.6); }
+    #speed { font-size:64px; color:#7fffd4; font-weight:800; width:200px; text-align:center; }
+    .small { font-size:12px; color:#9fb0c9; }
+    .label { font-size:12px; color:#9fb0c9; margin-bottom:4px; }
+    #controls { display:flex; gap:10px; align-items:center; }
+    .btn { padding:8px 12px; border-radius:6px; border:0; font-weight:700; cursor:pointer; }
+    .btn.start { background:#8ef27c; color:#000; }
+    .btn.stop { background:#ff6b6b; color:#fff; }
+    #canvas-wrap { margin-top:14px; background:#06111a; padding:8px; border-radius:8px; height:480px; border:3px solid #032b3f; }
+    #chart { width:100%; height:100%; display:block; }
+    #right-controls { margin-left:auto; display:flex; gap:12px; align-items:center; }
+    input[type=range] { width:260px; }
+    .status { padding:6px 10px; border-radius:6px; background:#071a20; color:#cfe8ff; }
+    .danger { background:#381111; color:#ffb3b3; }
+    .ok { background:#113814; color:#baffc9; }
   </style>
 
+  <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
-
 <body>
-  <div style="text-align:center; margin-bottom:8px;">
-    <h1 style="color:#f8f8f8; font-family:'Segoe UI',sans-serif; font-size:18px; font-weight:bold; margin:0;">Drive Cycle Dashboard</h1>
-    <div style="color:#9fb0c9; font-family:'Consolas',monospace; font-size:10px; margin-top:2px;">Speed Monitoring & Analysis</div>
-  </div>
-  <div id="top">
-    <div class="card" style="display:flex;gap:8px;align-items:center;flex:1;"
-      <div class="metric-box">
-        <div class="metric-label">Actual Speed</div>
-        <div class="metric-value" id="speed">0.0</div>
+  <div id="top" style="align-items:flex-start;">
+    <div class="card" style="display:flex;gap:18px;align-items:center;">
+      <div style="text-align:center;">
+        <div class="small">ACTUAL</div>
+        <div id="speed">0.0</div>
         <div class="small">km/h</div>
       </div>
-      <div class="metric-box">
-        <div class="metric-label">Target Speed</div>
-        <div class="metric-value" id="target">0.0</div>
+      <div style="text-align:center;">
+        <div class="small">TARGET</div>
+        <div id="target">0.0</div>
         <div class="small">km/h</div>
       </div>
-      <div class="metric-box">
-        <div class="metric-label">Elapsed Time</div>
-        <div class="metric-value" id="time">0.0</div>
-        <div class="small">seconds</div>
+      <div style="text-align:center;">
+        <div class="small">ELAPSED</div>
+        <div id="time">0.00</div>
+        <div class="small">s</div>
       </div>
-      <div class="metric-box">
-        <div class="metric-label">Violations</div>
-        <div class="metric-value" id="viol">0</div>
-        <div class="small">count</div>
+      <div style="text-align:center;">
+        <div class="small">VIOLATIONS</div>
+        <div id="viol">0</div>
       </div>
     </div>
 
-    <div id="controls" class="card">
-      <button id="startBtn" class="btn start">START</button>
-      <button id="stopBtn" class="btn stop">PAUSE</button>
-      <button id="resetBtn" class="btn">RESET</button>
+    <div class="card" id="controls" style="min-width:560px;">
+      <button id="startBtn" class="btn start">Start</button>
+      <button id="stopBtn" class="btn stop">Stop</button>
+      <button id="resetBtn" class="btn">Reset</button>
 
       <div style="margin-left:8px;">
         <div class="label">MODE</div>
@@ -300,24 +64,25 @@
         </select>
       </div>
 
-      <div style="margin-left:6px;">
-        <div class="label">SPEED</div>
+      <div style="margin-left:8px;">
+        <div class="label">MANUAL SPEED</div>
         <input id="slider" type="range" min="0" max="140" step="0.1" value="0">
-        <div id="sliderVal" class="small">0.0</div>
+        <div id="sliderVal" class="small">0.0 km/h</div>
       </div>
 
       <div id="right-controls">
-        <div id="file-upload">
-          <div class="label">PROFILE CSV</div>
-          <input type="file" id="csvFile" accept=".csv" />
-          <button class="file-btn" onclick="document.getElementById('csvFile').click()">Browse</button>
-          <div id="fileName">drive_cycles.csv</div>
-        </div>
         <div>
           <div class="label">WINDOW (s)</div>
-          <input id="windowIn" type="number" min="5" max="300" value="30" style="width:80px">
+          <input id="windowIn" type="number" min="5" max="300" value="20" style="width:70px">
         </div>
-        <div id="status" class="small">WS: disconnected</div>
+        <div>
+          <div class="label">LEAD %</div>
+          <input id="leadIn" type="number" min="0" max="80" value="30" style="width:70px">
+        </div>
+        <div>
+          <div class="label">Min Viol (s)</div>
+          <input id="minViol" type="number" min="0.1" max="10" step="0.1" value="1.0" style="width:70px">
+        </div>
       </div>
     </div>
   </div>
@@ -326,154 +91,95 @@
     <canvas id="chart"></canvas>
   </div>
 
+  <div style="margin-top:8px; display:flex; gap:10px; align-items:center;">
+    <div id="violationPending" class="status" style="display:none;">Violation pending: <span id="pendingTime">0.0</span>s</div>
+    <div id="connectionStatus" class="status">WS: <span id="wsState">—</span></div>
+  </div>
+
 <script>
 const WS_URL = "ws://localhost:8765";
 let ws = null;
-let reconnectDelay = 1000;           // start delay
-const MAX_RECONNECT_DELAY = 15000;   // exponential backoff cap
-let reconnectTimer = null;
-let hasProfile = false;
-
 let profile = { time:[], target:[], upper:[], lower:[] };
 let chart = null;
-let windowSeconds = 30;
-
-function setStatus(text) {
-  const el = document.getElementById('status');
-  if (el) el.innerText = "WS: " + text;
-}
+let windowSeconds = 20;        // horizontal visible seconds
+let leadFraction = 0.30;      // marker position from left (0..1)
+let minViolationClient = 1.0; // seconds used for pending indicator (user controlled)
+let lastViolations = 0;
+let pendingStart = null;      // when frontend detected out_of_range started
+let lastUpdate = null;
 
 function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-
-  setStatus("connecting");
-  try {
-    ws = new WebSocket(WS_URL);
-  } catch (err) {
-    setStatus("failed");
-    scheduleReconnect();
-    return;
-  }
-
+  ws = new WebSocket(WS_URL);
   ws.onopen = () => {
-    console.log("WS connected to", WS_URL);
-    setStatus("connected");
-    // reset backoff
-    reconnectDelay = 1000;
-    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    console.log("WS open");
+    document.getElementById('wsState').innerText = "open";
   };
-
   ws.onmessage = (ev) => {
     try {
       const obj = JSON.parse(ev.data);
       handleMessage(obj);
     } catch (e) {
-      console.warn("WS Parse Error:", e);
+      console.warn("Bad ws msg", e);
     }
   };
-
-  ws.onclose = (ev) => {
-    console.log("WS closed:", ev.code, ev.reason);
-    setStatus("disconnected");
-    scheduleReconnect();
+  ws.onclose = () => {
+    console.log("WS closed");
+    document.getElementById('wsState').innerText = "closed";
+    setTimeout(connectWS, 1000);
   };
-
   ws.onerror = (e) => {
-    console.log("WS error:", e);
-    // socket will trigger onclose next; don't schedule here to avoid double reconnect
+    console.log("WS error", e);
+    document.getElementById('wsState').innerText = "error";
   };
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    reconnectDelay = Math.min(MAX_RECONNECT_DELAY, Math.floor(reconnectDelay * 1.8));
-    connectWS();
-  }, reconnectDelay);
 }
 
 function sendCmd(obj) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    try {
-      ws.send(JSON.stringify(obj));
-    } catch (e) {
-      console.warn("Failed to send cmd", e);
-    }
-  } else {
-    console.warn("WebSocket not open; cannot send", obj);
-  }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
 }
 
 function handleMessage(obj) {
-  if (!obj || !obj.type) return;
-
   if (obj.type === "profile") {
-    profile = obj.profile || profile;
+    profile = obj.profile;
     drawProfile();
-    hasProfile = true;
-    // auto-adjust window if profile is long
-    const maxProfileTime = (profile.time && profile.time.length) ? profile.time[profile.time.length-1] : 0;
-    if (maxProfileTime > 120 && windowSeconds < 30) windowSeconds = Math.min(60, Math.round(maxProfileTime/6));
-    document.getElementById('windowIn').value = windowSeconds;
+    // adjust window if profile end is large
+    const maxT = profile.time && profile.time.length ? profile.time[profile.time.length-1] : 0;
+    if (maxT > 120 && windowSeconds < 30) {
+      windowSeconds = Math.min(60, Math.round(maxT / 6));
+      document.getElementById('windowIn').value = windowSeconds;
+    }
   } else if (obj.type === "update") {
-    const actual = (typeof obj.actual === 'number') ? obj.actual : parseFloat(obj.actual) || 0.0;
-    const target = (typeof obj.target === 'number') ? obj.target : (parseFloat(obj.target) || 0.0);
-    const timev = (typeof obj.time === 'number') ? obj.time : (parseFloat(obj.time) || 0.0);
-    const violations = Number.isFinite(obj.violations) ? obj.violations : (parseInt(obj.violations) || 0);
+    // update numeric UI
+    document.getElementById('speed').innerText = (obj.actual ?? 0).toFixed(1);
+    document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
+    document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
+    document.getElementById('viol').innerText = (obj.violations ?? 0);
 
-    // update numeric displays safely
-    document.getElementById("speed").innerText = actual.toFixed(1);
-    document.getElementById("target").innerText = target.toFixed(1);
-    document.getElementById("time").innerText = timev.toFixed(2);
-    document.getElementById("viol").innerText = violations;
+    // detect pending/counting based on client-side minViol value
+    handlePending(obj);
 
-    addActualPoint(timev, actual);
+    // update chart
+    addActualPoint(obj.time, obj.actual, obj.upper, obj.lower);
+    lastUpdate = obj;
   } else if (obj.type === "reset") {
-    // Reset all displays
-    document.getElementById("speed").innerText = "0.0";
-    document.getElementById("target").innerText = "0.0";
-    document.getElementById("time").innerText = "0.0";
-    document.getElementById("viol").innerText = "0";
-    
-    // Reset slider
-    const slider = document.getElementById('slider');
-    const sliderVal = document.getElementById('sliderVal');
-    slider.value = 0;
-    sliderVal.innerText = "0.0";
-    
-    // Clear chart
     if (chart) {
       chart.data.datasets[3].data = [];
       chart.update();
     }
+    lastViolations = 0;
+    pendingStart = null;
+    hidePending();
   } else if (obj.type === "complete") {
-    alert("Test Completed! Violations: " + (obj.violations || 0));
-  } else if (obj.type === "profile_loaded") {
-    console.log("Profile loaded:", obj.filename);
-    hasProfile = true;
-  } else if (obj.type === "error") {
-    alert("Error: " + (obj.message || "Unknown error"));
+    alert("Test complete! Violations: " + obj.violations);
   }
 }
 
-// Draw initial profile graph
+// draw profile
 function drawProfile() {
   const times = profile.time || [];
-  if (!times || times.length === 0) {
-    // empty chart
-    initChart();
-    return;
-  }
+  const targetData = (profile.target || []).map((v,i) => ({x: times[i], y: v}));
+  const upperData = (profile.upper || []).map((v,i) => ({x: times[i], y: v}));
+  const lowerData = (profile.lower || []).map((v,i) => ({x: times[i], y: v}));
 
-  const upper = (profile.upper||[]).map((v,i)=>({x:times[i]||0,y:(typeof v==='number'?v:parseFloat(v)||0)}));
-  const lower = (profile.lower||[]).map((v,i)=>({x:times[i]||0,y:(typeof v==='number'?v:parseFloat(v)||0)}));
-  const target = (profile.target||[]).map((v,i)=>({x:times[i]||0,y:(typeof v==='number'?v:parseFloat(v)||0)}));
-
-  initChart(upper, lower, target);
-}
-
-function initChart(upperData, lowerData, targetData) {
   const ctx = document.getElementById('chart').getContext('2d');
   if (chart) chart.destroy();
 
@@ -481,133 +187,168 @@ function initChart(upperData, lowerData, targetData) {
     type: 'line',
     data: {
       datasets: [
-        { label:'Upper', data: upperData || [], borderColor:'#ff2b2b', borderWidth:2, pointRadius:0, fill:false },
-        { label:'Lower', data: lowerData || [], borderColor:'#007bff', borderWidth:2, pointRadius:0, fill:'-1' },
-        { label:'Target', data: targetData || [], borderColor:'#0df27c', borderWidth:2.5, pointRadius:0 },
-        { label:'Actual', data:[], borderColor:'#ffd400', borderWidth:3, pointRadius:6, pointHoverRadius:8, pointBackgroundColor:'#ffd400', pointBorderColor:'#ffffff', pointBorderWidth:2, showLine:true }
+        { label: 'Upper', data: upperData, borderColor:'#ff3b3b', borderWidth:2, pointRadius:0, fill:false, tension:0 },
+        { label: 'Lower', data: lowerData, borderColor:'#1e90ff', borderWidth:2, pointRadius:0, fill:'-1', tension:0 },
+        { label: 'Target', data: targetData, borderColor:'#2ee36b', borderWidth:2.5, pointRadius:0, fill:false, tension:0.2 },
+        { label: 'Actual', data: [], borderColor:'#ffd400', borderWidth:3, pointRadius:4, backgroundColor:'#ffd400', fill:false, tension:0.4 }
       ]
     },
     options: {
       animation:false,
       responsive:true,
       maintainAspectRatio:false,
-      layout: {
-        padding: {
-          top: 10,
-          bottom: 10,
-          left: 5,
-          right: 5
-        }
-      },
-      elements: { point: { radius: 0 } },
+      elements: { line: { cubicInterpolationMode: 'monotone' } },
       scales: {
         x: {
-          type:'linear',
-          min:0,
-          max:windowSeconds,
-          ticks:{ color:'#cfe8ff' },
-          title:{ display:true, text:'Time (s)', color:'#cfe8ff' }
+          type: 'linear',
+          title:{display:true, text:'Time (s)', color:'#cfe8ff'},
+          ticks: { stepSize: 1, color:'#cfe8ff' },
+          min: times.length? Math.max(0, times[0]) : 0,
+          max: times.length? Math.max(windowSeconds, times[Math.min(times.length-1, Math.floor(windowSeconds))]) : windowSeconds
         },
         y: {
-          min:-5,
-          max:125,
-          ticks:{ color:'#cfe8ff' },
-          title:{ display:true, text:'Speed (km/h)', color:'#cfe8ff' }
+          title:{display:true, text:'Speed (km/h)', color:'#cfe8ff'},
+          min:0,
+          max: 120,
+          ticks: { color:'#cfe8ff' }
         }
       },
-      plugins:{ legend:{ labels:{ color:'#dfe9f3' } } }
+      plugins: {
+        legend: { display: true, labels: { color:'#dfe9f3' } }
+      }
     }
   });
 }
 
-// Add actual speed point to graph
-function addActualPoint(t, speed) {
-  if (!chart) return;
-  if (!Number.isFinite(t) || !Number.isFinite(speed)) return;
-
+// add actual point and slide window with lead
+function addActualPoint(t, speed, upper, lower) {
+  if (!chart || t === null || t === undefined) return;
   const ds = chart.data.datasets[3];
-  ds.data.push({x:t, y:speed});
+  ds.data.push({x: t, y: speed});
 
-  // prune older points (keep only what falls inside last windowSeconds + margin)
-  const minKeep = t - (windowSeconds + 5);
+  // prune old points
+  const minKeep = t - (windowSeconds + 10);
   chart.data.datasets.forEach(d => {
     d.data = d.data.filter(pt => pt.x >= minKeep);
   });
 
-  // slide x-axis
-  chart.options.scales.x.min = Math.max(0, t - windowSeconds);
-  chart.options.scales.x.max = Math.max(windowSeconds, t);
+  // compute visible min/max using leadFraction
+  let visible_min = t - (windowSeconds * leadFraction);
+  if (visible_min < 0) visible_min = 0;
+  let visible_max = visible_min + windowSeconds;
+
+  // clamp to profile end (allow slight preview beyond end)
+  if (profile.time && profile.time.length) {
+    const prof_end = profile.time[profile.time.length - 1];
+    if (visible_max > prof_end + 1) {
+      visible_max = Math.min(visible_max, prof_end + 1);
+      visible_min = Math.max(0, visible_max - windowSeconds);
+    }
+  }
+
+  chart.options.scales.x.min = visible_min;
+  chart.options.scales.x.max = visible_max;
   chart.update('none');
 }
 
-// UI wiring
-document.getElementById("startBtn").onclick = ()=> sendCmd({cmd:'start'});
-document.getElementById("stopBtn").onclick  = ()=> sendCmd({cmd:'stop'});
-document.getElementById("resetBtn").onclick = ()=> {
-  sendCmd({cmd:'reset'});
-  // Reset all UI elements immediately
-  document.getElementById("speed").innerText = "0.0";
-  document.getElementById("target").innerText = "0.0";
-  document.getElementById("time").innerText = "0.0";
-  document.getElementById("viol").innerText = "0";
-  
-  // Reset slider to 0
-  const slider = document.getElementById('slider');
-  const sliderVal = document.getElementById('sliderVal');
-  slider.value = 0;
-  sliderVal.innerText = "0.0";
-  
-  // Clear chart data
-  if(chart){ 
-    chart.data.datasets[3].data=[]; 
-    chart.update(); 
+// pending detection + UI
+function handlePending(obj) {
+  const t = obj.time || 0;
+  const actual = parseFloat(obj.actual || 0);
+  const upper = parseFloat(obj.upper || 1e9);
+  const lower = parseFloat(obj.lower || -1e9);
+  const viols = parseInt(obj.violations || 0);
+
+  // update minViolation from user input
+  const mv = parseFloat(document.getElementById('minViol').value) || 1.0;
+  minViolationClient = mv;
+
+  // if server already incremented violations, clear pending
+  if (viols > lastViolations) {
+    lastViolations = viols;
+    pendingStart = null;
+    hidePending();
+    return;
   }
-};
 
-document.getElementById("mode").onchange = (e)=> {
-  sendCmd({cmd:"set_mode", mode:e.target.value});
-};
+  const out_of_range = (actual < lower) || (actual > upper);
 
-// only send manual_speed when in manual mode
-const slider = document.getElementById('slider');
-const sliderVal = document.getElementById('sliderVal');
-slider.oninput = (e)=>{
+  if (t <= 0) { // not started yet
+    pendingStart = null;
+    hidePending();
+    return;
+  }
+
+  if (out_of_range) {
+    if (!pendingStart) {
+      pendingStart = t;
+    }
+    const dur = Math.max(0, t - pendingStart);
+    const remaining = Math.max(0, (minViolationClient - dur));
+    showPending(dur, remaining);
+  } else {
+    pendingStart = null;
+    hidePending();
+  }
+}
+
+function showPending(dur, remaining) {
+  const el = document.getElementById('violationPending');
+  el.style.display = 'inline-block';
+  el.className = remaining <= 0 ? 'status danger' : 'status';
+  document.getElementById('pendingTime').innerText = dur.toFixed(2);
+}
+
+function hidePending() {
+  const el = document.getElementById('violationPending');
+  el.style.display = 'none';
+}
+
+// UI wiring
+document.getElementById('startBtn').onclick = () => sendCmd({cmd:'start'});
+document.getElementById('stopBtn').onclick = () => sendCmd({cmd:'stop'});
+document.getElementById('resetBtn').onclick = () => { sendCmd({cmd:'reset'}); if (chart) { chart.data.datasets[3].data=[]; chart.update(); } };
+document.getElementById('mode').onchange = (e) => sendCmd({cmd:'set_mode', mode: e.target.value});
+
+const slider = document.getElementById('slider'), sliderVal = document.getElementById('sliderVal');
+slider.oninput = (e) => {
   const v = parseFloat(e.target.value);
-  sliderVal.innerText = v.toFixed(1);
-  const mode = document.getElementById('mode').value;
-  if (mode === 'manual') sendCmd({cmd:'manual_speed', speed:v});
+  sliderVal.innerText = v.toFixed(1) + " km/h";
+  sendCmd({cmd:'manual_speed', speed: v});
 };
 
-document.getElementById("windowIn").onchange = (e)=>{
-  windowSeconds = Math.max(5, Math.min(300, parseFloat(e.target.value) || 30));
+const windowInput = document.getElementById('windowIn');
+windowInput.onchange = (e) => {
+  let v = parseFloat(e.target.value) || 20;
+  v = Math.max(5, Math.min(300, v));
+  windowSeconds = v;
+  // adjust chart extents if we have latest time
   if (chart) {
-    // adjust visible window based on latest point
+    let latest = 0;
     const ds = chart.data.datasets[3].data;
-    let latest = ds.length ? ds[ds.length-1].x : (profile.time && profile.time.length ? profile.time[profile.time.length-1] : 0);
-    chart.options.scales.x.min = Math.max(0, latest - windowSeconds);
-    chart.options.scales.x.max = Math.max(windowSeconds, latest);
+    if (ds.length) latest = ds[ds.length-1].x;
+    else if (profile.time && profile.time.length) latest = profile.time[profile.time.length-1];
+    const visible_min = Math.max(0, latest - (windowSeconds * leadFraction));
+    chart.options.scales.x.min = visible_min;
+    chart.options.scales.x.max = visible_min + windowSeconds;
     chart.update();
   }
 };
 
-// File upload handling
-document.getElementById('csvFile').onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  
-  const fileName = file.name;
-  document.getElementById('fileName').innerText = fileName;
-  
-  try {
-    const text = await file.text();
-    sendCmd({cmd: 'load_profile', csv_data: text, filename: fileName});
-  } catch (error) {
-    console.error('Error reading file:', error);
-    alert('Error reading CSV file: ' + error.message);
-  }
+const leadInput = document.getElementById('leadIn');
+leadInput.onchange = (e) => {
+  let p = parseFloat(e.target.value) || 30;
+  p = Math.max(0, Math.min(80, p));
+  leadFraction = p / 100.0;
 };
 
-// start connection
+const minViolInput = document.getElementById('minViol');
+minViolInput.onchange = (e) => {
+  // purely client-side pending indicator; server uses its own configured min_violation
+  minViolationClient = parseFloat(e.target.value) || 1.0;
+};
+
+// start WS
 connectWS();
 </script>
 </body>
