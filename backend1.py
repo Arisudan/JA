@@ -408,7 +408,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
     backend = DriveBackend(df, tick_hz=TICK_HZ, debounce=debounce, circ=circ, ppr=ppr, gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug)
 
     try:
-        server = await websockets.serve(backend.handler, host, port)
+        server = await websockets.serve(lambda ws. path=None: backend.handler(ws, path), host, port)
     except OSError as e:
         print("Fatal: could not bind websocket port:", e)
         print("If port is in use, stop any other backend or choose a different --port.")
