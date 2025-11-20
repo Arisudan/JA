@@ -384,7 +384,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
                            gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug)
 
     try:
-        server = await websockets.serve(lambda ws, path:None: backend.handler(ws, path), host, port)
+        server = await websockets.serve(lambda ws, path=None: backend.handler(ws, path), host, port)
     except OSError as e:
         print("Fatal: could not bind websocket port:", e)
         raise
