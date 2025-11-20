@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Drive Cycle Display</title>
+  <title>Drive Cycle Display (fixed violations)</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
     body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:10px}
@@ -12,11 +12,12 @@
     .small{font-size:12px;color:#9fb0c9}
     button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
     .start{background:#7ef27c;color:#000}
-    .stop{background:#ff6b6b;color:#fff'}
+    .stop{background:#ff6b6b;color:#fff}
     #chartWrap{margin-top:12px;height:420px;padding:8px;border-radius:8px;border:3px solid #032b3f}
     #legend{display:flex;gap:18px;justify-content:center;margin-bottom:6px}
     .flash{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px}
     .danger{background:#441111;color:#ffd8d8}
+    #consoleLog { margin-top:10px; font-family: monospace; font-size:12px; color:#9fb0c9; max-height:140px; overflow:auto; background:#021017; padding:8px; border-radius:6px; border:1px solid #013040 }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
@@ -59,74 +60,98 @@
     <div id="wsstatus" style="display:inline-block;margin-left:8px">WS: <span id="wsval">—</span></div>
   </div>
 
+  <div id="consoleLog"></div>
+
 <script>
 const WS_URL = "ws://localhost:8765";
 let ws = null;
 let profile = {time:[], target:[], upper:[], lower:[]};
 let chart = null;
 let windowSeconds = 20;
-let leadPct = 0.30; // marker 30% from left
-let markerPoints = []; // persistent red markers
+let leadPct = 0.30;
+let markerDatasetIndex = 4;
 
-function connect() {
+// util
+function logConsole(text){
+  const el = document.getElementById('consoleLog');
+  const t = (new Date()).toLocaleTimeString();
+  el.innerText = `${t}  ${text}\n` + el.innerText;
+}
+
+// connect and handle messages
+function connect(){
   ws = new WebSocket(WS_URL);
-  ws.onopen = ()=> { document.getElementById('wsval').innerText = "open"; };
-  ws.onclose = ()=> { document.getElementById('wsval').innerText = "closed"; setTimeout(connect,1000); };
-  ws.onerror = ()=> document.getElementById('wsval').innerText = "error";
-  ws.onmessage = (ev)=> {
+  ws.onopen = () => { document.getElementById('wsval').innerText = "open"; logConsole("WS open"); };
+  ws.onclose = () => { document.getElementById('wsval').innerText = "closed"; logConsole("WS closed"); setTimeout(connect,1000); };
+  ws.onerror = (e)=> { document.getElementById('wsval').innerText = "error"; console.error(e); logConsole("WS error"); };
+  ws.onmessage = (ev) => {
+    console.debug("WS RECV:", ev.data);
     try {
       const obj = JSON.parse(ev.data);
       handleMsg(obj);
-    } catch(e) { console.warn("bad ws msg", e); }
+    } catch(e){
+      console.warn("Invalid JSON from WS", e);
+      logConsole("bad JSON");
+    }
   };
 }
-function sendCmd(o){ if (ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
-function handleMsg(obj) {
-  if (obj.type === 'profile') {
-    profile = obj.profile;
+function handleMsg(obj){
+  // show raw message in console area too
+  logConsole("RECV: " + JSON.stringify(obj));
+
+  if(obj.type === "profile"){
+    profile = obj.profile || profile;
     drawProfile();
-  } else if (obj.type === 'update') {
+  } else if (obj.type === "update"){
     document.getElementById('actual').innerText = (obj.actual ?? 0).toFixed(1);
     document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
     document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
+    // update violations display from update too (keeps UI consistent)
     document.getElementById('viol').innerText = (obj.violations ?? 0);
-
+    // add actual point to chart
     addPoint(obj.time, obj.actual);
-    if (obj.crossed) {
-      showFlash("CROSS counted (" + (obj.cross_side||'') + ")");
-      addMarker(obj.time, obj.actual, obj.cross_side);
-    }
-  } else if (obj.type === 'reset') {
-    if (chart) {
+    if(obj.crossed){ flashOnce("Crossed: " + (obj.cross_side||'')); addCrossMarker(obj.time, obj.actual, obj.cross_side); }
+  } else if (obj.type === "violation"){
+    // IMMEDIATE handling of explicit violation event
+    const vcount = obj.violations ?? 0;
+    document.getElementById('viol').innerText = vcount;
+    // draw red marker
+    addCrossMarker(obj.time, obj.actual, obj.side);
+    flashOnce("Violation counted (" + (obj.side||'') + ")");
+    logConsole("VIOLATION msg handled -> violations=" + vcount);
+  } else if (obj.type === "reset"){
+    if(chart){
       chart.data.datasets[3].data = [];
-      chart.data.datasets[4].data = [];
-      markerPoints = [];
+      chart.data.datasets[markerDatasetIndex].data = [];
       chart.update();
     }
     document.getElementById('viol').innerText = "0";
-  } else if (obj.type === 'complete') {
-    alert("Profile complete. Violations: " + obj.violations);
+    logConsole("RESET processed");
+  } else if (obj.type === "complete"){
+    alert("Test complete. Violations: " + obj.violations);
+    logConsole("COMPLETE");
   }
 }
 
+// Chart and UI functions
 function drawProfile(){
   const times = profile.time || [];
   const tgt = (profile.target||[]).map((v,i)=>({x:times[i], y:v}));
   const up = (profile.upper||[]).map((v,i)=>({x:times[i], y:v}));
   const lo = (profile.lower||[]).map((v,i)=>({x:times[i], y:v}));
   const ctx = document.getElementById('chart').getContext('2d');
-  if (chart) chart.destroy();
+  if(chart) chart.destroy();
 
   chart = new Chart(ctx, {
-    type:'line',
+    type: 'line',
     data: {
       datasets: [
         { label:'Upper', data: up, borderColor:'#ff4d4d', borderWidth:2, pointRadius:0, fill:false },
         { label:'Lower', data: lo, borderColor:'#4da6ff', borderWidth:2, pointRadius:0, fill:'-1' },
         { label:'Target', data: tgt, borderColor:'#40e37a', borderWidth:2.5, pointRadius:0, fill:false, tension:0.2 },
-        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.3, showLine:true },
-        { label:'Crosses', data: [], type:'scatter', pointStyle:'triangle', pointRadius:8, showLine:false }
+        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.1, showLine:true },
+        { label:'Violations', data: [], type:'scatter', pointStyle:'triangle', pointRadius:9, showLine:false }
       ]
     },
     options: {
@@ -140,16 +165,16 @@ function drawProfile(){
     }
   });
 
-  document.getElementById('legend').innerHTML = '<span style="color:#ff4d4d">■ Upper</span> &nbsp; <span style="color:#4da6ff">■ Lower</span> &nbsp; <span style="color:#40e37a">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span> &nbsp; <span style="color:#ff9999">▲ Cross</span>';
+  document.getElementById('legend').innerHTML = '<span style="color:#ff4d4d">■ Upper</span> &nbsp; <span style="color:#4da6ff">■ Lower</span> &nbsp; <span style="color:#40e37a">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span> &nbsp; <span style="color:#ff9999">▲ Violation</span>';
 }
 
 function addPoint(t, actual){
-  if (!chart || t===null || t===undefined) return;
+  if(!chart || t===null || t===undefined) return;
   chart.data.datasets[3].data.push({x:t, y:actual});
-  // prune
+  // prune old points for memory
   const keepMin = t - (windowSeconds + 10);
-  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => p.x >= keepMin || typeof p.x !== 'number'));
-  // auto scroll with lead
+  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => (typeof p.x !== 'number') || p.x >= keepMin));
+  // scroll window with lead
   let vmin = Math.max(0, t - (windowSeconds * leadPct));
   let vmax = vmin + windowSeconds;
   chart.options.scales.x.min = vmin;
@@ -157,16 +182,20 @@ function addPoint(t, actual){
   chart.update('none');
 }
 
-function addMarker(t, actual, side) {
-  if (!chart) return;
-  const dataset = chart.data.datasets[4];
-  const color = (side === 'upper') ? '#ff2b2b' : '#ff8b2b';
-  // store marker (Chart.js scatter)
-  dataset.data.push({x:t, y: actual});
+function addCrossMarker(t, value, side){
+  if(!chart) return;
+  const ds = chart.data.datasets[markerDatasetIndex];
+  // choose marker color via style (Chart.js scatter uses global pointStyle; we'll pass triangle and let color vary by dataset point backgroundColor)
+  ds.data.push({x:t, y:value, side: side});
+  // provide custom point background color by editing meta data
+  // Chart.js scatter doesn't support per-point color easily here; as a simple approach: update dataset pointBackgroundColor array
+  ds.pointBackgroundColor = ds.pointBackgroundColor || [];
+  ds.pointBackgroundColor.push(side === 'upper' ? '#ff2b2b' : '#ff8b2b');
   chart.update('none');
 }
 
-function showFlash(text) {
+// small flash cue
+function flashOnce(text){
   const el = document.getElementById('flash');
   el.innerText = text;
   el.style.display = 'inline-block';
@@ -181,16 +210,21 @@ document.getElementById('resetBtn').onclick = ()=> sendCmd({cmd:'reset'});
 document.getElementById('mode').onchange = (e)=> sendCmd({cmd:'set_mode', mode: e.target.value});
 const slider = document.getElementById('slider');
 const sliderVal = document.getElementById('sliderVal');
-slider.oninput = (e)=> {
-  const v = parseFloat(e.target.value);
-  sliderVal.innerText = v.toFixed(1) + " km/h";
-  sendCmd({cmd:'manual_speed', speed: v});
-};
-document.getElementById('window').onchange = (e)=> {
-  let v = parseFloat(e.target.value) || 20;
-  windowSeconds = Math.max(5, Math.min(300, v));
-};
+slider.oninput = (e)=> { const v=parseFloat(e.target.value); sliderVal.innerText = v.toFixed(1) + " km/h"; sendCmd({cmd:'manual_speed', speed: v}); };
+document.getElementById('window').onchange = (e)=> { let v = parseFloat(e.target.value)||20; windowSeconds = Math.max(5, Math.min(300, v)); };
 
+function sendCmd(obj){
+  if(ws && ws.readyState === WebSocket.OPEN){
+    ws.send(JSON.stringify(obj));
+    console.debug("WS SEND:", obj);
+    logConsole("SEND: " + JSON.stringify(obj));
+  } else {
+    console.warn("WS not open, cannot send", obj);
+    logConsole("SEND FAILED (WS closed): " + JSON.stringify(obj));
+  }
+}
+
+// boot
 connect();
 </script>
 </body>
