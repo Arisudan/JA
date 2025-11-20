@@ -1,28 +1,27 @@
 <!doctype html>
 <html>
 <head>
-<meta charset="utf-8">
-<title>Drive Cycle - Rider Aid</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-  body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:0;padding:10px}
-  .top {display:flex;gap:12px;align-items:center}
-  .card {background:#0d1820;padding:10px;border-radius:8px;box-shadow:0 3px 8px rgba(0,0,0,0.6)}
-  .big {font-size:48px;font-weight:800;color:#7fffd4;text-align:center;width:160px}
-  .small {font-size:12px;color:#9fb0c9}
-  #controls {display:flex;gap:10px;align-items:center}
-  button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
-  .start{background:#8ef27c;color:#000}
-  .stop{background:#ff6b6b;color:#fff}
-  #chartWrap{margin-top:12px;background:#06111a;padding:8px;border-radius:8px;height:420px;border:3px solid #032b3f}
-  #legend {display:flex;gap:18px;justify-content:center;margin-bottom:6px}
-  .status {padding:6px 10px;border-radius:6px;background:#071a20;color:#cfe8ff}
-  .danger {background:#441111;color:#ffd8d8}
-</style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+  <meta charset="utf-8">
+  <title>Drive Cycle Display</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:10px}
+    .row{display:flex;gap:12px;align-items:center}
+    .card{background:#0c1620;padding:10px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.6)}
+    .big{font-size:56px;font-weight:800;color:#7fffd4;text-align:center;width:160px}
+    .small{font-size:12px;color:#9fb0c9}
+    button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
+    .start{background:#7ef27c;color:#000}
+    .stop{background:#ff6b6b;color:#fff'}
+    #chartWrap{margin-top:12px;height:420px;padding:8px;border-radius:8px;border:3px solid #032b3f}
+    #legend{display:flex;gap:18px;justify-content:center;margin-bottom:6px}
+    .flash{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px}
+    .danger{background:#441111;color:#ffd8d8}
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
 <body>
-  <div class="top">
+  <div class="row">
     <div class="card" style="display:flex;gap:18px;align-items:center">
       <div><div class="small">ACTUAL</div><div id="actual" class="big">0.0</div><div class="small">km/h</div></div>
       <div><div class="small">TARGET</div><div id="target" style="font-size:20px">0.0</div></div>
@@ -30,25 +29,22 @@
       <div><div class="small">VIOLATIONS</div><div id="viol" style="font-size:20px">0</div></div>
     </div>
 
-    <div class="card" id="controls" style="min-width:560px">
+    <div class="card" style="min-width:620px" id="controls">
       <button id="startBtn" class="start">Start</button>
       <button id="stopBtn" class="stop">Stop</button>
       <button id="resetBtn">Reset</button>
 
-      <label style="margin-left:6px"><div class="small">MODE</div>
-        <select id="mode"><option value="manual">Manual</option><option value="real">Real Sensor</option></select>
+      <label style="margin-left:8px"><div class="small">MODE</div>
+        <select id="mode"><option value="manual">Manual</option><option value="real">Real</option></select>
       </label>
 
-      <label style="margin-left:6px"><div class="small">MANUAL SPEED</div>
-        <input id="slider" type="range" min="0" max="140" step="0.1" value="0" style="width:220px">
+      <label style="margin-left:8px"><div class="small">MANUAL SPEED</div>
+        <input id="slider" type="range" min="0" max="140" step="0.1" value="0" style="width:260px">
+        <div id="sliderVal" class="small">0.0 km/h</div>
       </label>
 
       <label style="margin-left:8px"><div class="small">WINDOW (s)</div>
         <input id="window" type="number" min="5" max="300" value="20" style="width:60px">
-      </label>
-
-      <label style="margin-left:6px"><div class="small">LEAD %</div>
-        <input id="lead" type="number" min="0" max="80" value="30" style="width:60px">
       </label>
     </div>
   </div>
@@ -59,8 +55,8 @@
   </div>
 
   <div style="margin-top:10px">
-    <div id="pending" class="status" style="display:none"></div>
-    <div id="wsstate" class="status">WS: <span id="wsval">—</span></div>
+    <div id="flash" class="flash" style="display:none"></div>
+    <div id="wsstatus" style="display:inline-block;margin-left:8px">WS: <span id="wsval">—</span></div>
   </div>
 
 <script>
@@ -69,37 +65,48 @@ let ws = null;
 let profile = {time:[], target:[], upper:[], lower:[]};
 let chart = null;
 let windowSeconds = 20;
-let leadPct = 0.30;
+let leadPct = 0.30; // marker 30% from left
+let markerPoints = []; // persistent red markers
 
 function connect() {
   ws = new WebSocket(WS_URL);
-  ws.onopen = () => document.getElementById('wsval').innerText = "open";
-  ws.onclose = () => { document.getElementById('wsval').innerText = "closed"; setTimeout(connect,1000); };
-  ws.onerror = () => document.getElementById('wsval').innerText = "error";
-  ws.onmessage = (ev) => {
+  ws.onopen = ()=> { document.getElementById('wsval').innerText = "open"; };
+  ws.onclose = ()=> { document.getElementById('wsval').innerText = "closed"; setTimeout(connect,1000); };
+  ws.onerror = ()=> document.getElementById('wsval').innerText = "error";
+  ws.onmessage = (ev)=> {
     try {
       const obj = JSON.parse(ev.data);
       handleMsg(obj);
-    } catch(e) { console.warn("bad msg", e); }
+    } catch(e) { console.warn("bad ws msg", e); }
   };
 }
 function sendCmd(o){ if (ws && ws.readyState===WebSocket.OPEN) ws.send(JSON.stringify(o)); }
 
-function handleMsg(obj){
-  if (obj.type === "profile"){
+function handleMsg(obj) {
+  if (obj.type === 'profile') {
     profile = obj.profile;
     drawProfile();
-  } else if (obj.type === "update"){
+  } else if (obj.type === 'update') {
     document.getElementById('actual').innerText = (obj.actual ?? 0).toFixed(1);
     document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
     document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
     document.getElementById('viol').innerText = (obj.violations ?? 0);
-    if (obj.crossed) flashViolation();
-    addPoint(obj.time, obj.actual, obj.upper, obj.lower, !!obj.crossed);
-  } else if (obj.type === "reset"){
-    if (chart) chart.data.datasets[3].data = [];
-  } else if (obj.type === "complete"){
-    alert("Test complete. Violations: " + obj.violations);
+
+    addPoint(obj.time, obj.actual);
+    if (obj.crossed) {
+      showFlash("CROSS counted (" + (obj.cross_side||'') + ")");
+      addMarker(obj.time, obj.actual, obj.cross_side);
+    }
+  } else if (obj.type === 'reset') {
+    if (chart) {
+      chart.data.datasets[3].data = [];
+      chart.data.datasets[4].data = [];
+      markerPoints = [];
+      chart.update();
+    }
+    document.getElementById('viol').innerText = "0";
+  } else if (obj.type === 'complete') {
+    alert("Profile complete. Violations: " + obj.violations);
   }
 }
 
@@ -113,60 +120,58 @@ function drawProfile(){
 
   chart = new Chart(ctx, {
     type:'line',
-    data:{
-      datasets:[
-        { label:'Upper', data: up, borderColor:'#ff3b3b', pointRadius:0, borderWidth:2 },
-        { label:'Lower', data: lo, borderColor:'#1e90ff', pointRadius:0, borderWidth:2, fill:'-1' },
-        { label:'Target', data: tgt, borderColor:'#2ee36b', pointRadius:0, borderWidth:2.5, tension:0.2 },
-        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.3 }
+    data: {
+      datasets: [
+        { label:'Upper', data: up, borderColor:'#ff4d4d', borderWidth:2, pointRadius:0, fill:false },
+        { label:'Lower', data: lo, borderColor:'#4da6ff', borderWidth:2, pointRadius:0, fill:'-1' },
+        { label:'Target', data: tgt, borderColor:'#40e37a', borderWidth:2.5, pointRadius:0, fill:false, tension:0.2 },
+        { label:'Actual', data: [], borderColor:'#ffd400', backgroundColor:'#ffd400', pointRadius:3, borderWidth:2, tension:0.3, showLine:true },
+        { label:'Crosses', data: [], type:'scatter', pointStyle:'triangle', pointRadius:8, showLine:false }
       ]
     },
-    options:{
-      animation:false, responsive:true, maintainAspectRatio:false,
-      scales:{
-        x:{ type:'linear', title:{display:true,text:'Time (s)'}, ticks:{color:'#dfe9f3'} },
-        y:{ min:0, max:120, title:{display:true,text:'Speed (km/h)'} }
-      }
+    options: {
+      animation:false,
+      maintainAspectRatio:false,
+      scales: {
+        x: { type:'linear', title:{display:true,text:'Time (s)'} },
+        y: { min:0, max: 140, title:{display:true,text:'Speed (km/h)'} }
+      },
+      plugins: { legend: { display:true } }
     }
   });
 
-  // legend
-  const legend = document.getElementById('legend');
-  legend.innerHTML = '<span style="color:#ff3b3b">■ Upper</span> &nbsp; <span style="color:#1e90ff">■ Lower</span> &nbsp; <span style="color:#2ee36b">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span>';
+  document.getElementById('legend').innerHTML = '<span style="color:#ff4d4d">■ Upper</span> &nbsp; <span style="color:#4da6ff">■ Lower</span> &nbsp; <span style="color:#40e37a">■ Target</span> &nbsp; <span style="color:#ffd400">■ Actual</span> &nbsp; <span style="color:#ff9999">▲ Cross</span>';
 }
 
-function addPoint(t, actual, upper, lower, crossed){
+function addPoint(t, actual){
   if (!chart || t===null || t===undefined) return;
   chart.data.datasets[3].data.push({x:t, y:actual});
-
-  // prune old points
+  // prune
   const keepMin = t - (windowSeconds + 10);
-  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => p.x >= keepMin));
-
-  // set visible range using lead
+  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => p.x >= keepMin || typeof p.x !== 'number'));
+  // auto scroll with lead
   let vmin = Math.max(0, t - (windowSeconds * leadPct));
   let vmax = vmin + windowSeconds;
   chart.options.scales.x.min = vmin;
   chart.options.scales.x.max = vmax;
   chart.update('none');
-
-  // red marker if crossed
-  if (crossed){
-    const ctx = chart.ctx;
-    const xscale = chart.scales.x;
-    const yscale = chart.scales.y;
-    // draw a small red circle marker on the latest actual (immediate visual cue)
-    // (we keep it simple: flash pending area text)
-    // You can implement persistent markers if needed.
-  }
 }
 
-function flashViolation(){
-  const el = document.getElementById('pending');
+function addMarker(t, actual, side) {
+  if (!chart) return;
+  const dataset = chart.data.datasets[4];
+  const color = (side === 'upper') ? '#ff2b2b' : '#ff8b2b';
+  // store marker (Chart.js scatter)
+  dataset.data.push({x:t, y: actual});
+  chart.update('none');
+}
+
+function showFlash(text) {
+  const el = document.getElementById('flash');
+  el.innerText = text;
   el.style.display = 'inline-block';
-  el.className = 'status danger';
-  el.innerText = 'CROSS! Violation counted';
-  setTimeout(()=>{ el.style.display='none'; }, 800);
+  el.className = 'flash danger';
+  setTimeout(()=>{ el.style.display='none'; }, 900);
 }
 
 // UI wiring
@@ -174,9 +179,17 @@ document.getElementById('startBtn').onclick = ()=> sendCmd({cmd:'start'});
 document.getElementById('stopBtn').onclick = ()=> sendCmd({cmd:'stop'});
 document.getElementById('resetBtn').onclick = ()=> sendCmd({cmd:'reset'});
 document.getElementById('mode').onchange = (e)=> sendCmd({cmd:'set_mode', mode: e.target.value});
-document.getElementById('slider').oninput = (e)=> { const v=parseFloat(e.target.value); document.getElementById('slider').title=v; sendCmd({cmd:'manual_speed', speed:v}); };
-document.getElementById('window').onchange = (e)=> { windowSeconds = Math.max(5, parseFloat(e.target.value)||20); };
-document.getElementById('lead').onchange = (e)=> { leadPct = Math.max(0, Math.min(80, parseFloat(e.target.value)||30))/100.0; };
+const slider = document.getElementById('slider');
+const sliderVal = document.getElementById('sliderVal');
+slider.oninput = (e)=> {
+  const v = parseFloat(e.target.value);
+  sliderVal.innerText = v.toFixed(1) + " km/h";
+  sendCmd({cmd:'manual_speed', speed: v});
+};
+document.getElementById('window').onchange = (e)=> {
+  let v = parseFloat(e.target.value) || 20;
+  windowSeconds = Math.max(5, Math.min(300, v));
+};
 
 connect();
 </script>
