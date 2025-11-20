@@ -15,4 +15,13 @@ psg@raspberrypi:~/project1 $ source myenv/bin/activate
   self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
 [CMD] stop
 
+# 1) Stop any running backend
+sudo pkill -f backend.py 2>/dev/null || true
+
+# 2) Replace GRACE_SECONDS = 5.0 -> 0.0 in the file
+# (works even if spacing differs)
+sed -i "s/GRACE_SECONDS *= *5\.0/GRACE_SECONDS = 0.0/" backend.py
+
+# 3) Start backend again (no sudo if not using GPIO)
+python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
 
