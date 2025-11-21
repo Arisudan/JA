@@ -8,12 +8,12 @@
     body{background:#061018;color:#dfe9f3;font-family:Arial,Helvetica,sans-serif;margin:8px;font-size:14px}
     .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
     .card{background:#0c1620;padding:8px;border-radius:6px;box-shadow:0 3px 10px rgba(0,0,0,0.6)}
-    .big{font-size:64px;font-weight:900;color:#cc1a1a;text-align:center;width:160px}
+    .big{font-size:120px;font-weight:900;color:#cc1a1a;text-align:center;width:220px}
     .small{font-size:11px;color:#9fb0c9;text-align:center}
     button{padding:8px 10px;border-radius:6px;border:0;cursor:pointer}
     .start{background:#7ef27c;color:#000}
     .stop{background:#ff6b6b;color:#fff}
-    #chartWrap{margin-top:12px;height:520px;padding:6px;border-radius:8px;border:2px solid #032b3f}
+    #chartWrap{margin-top:40px;height:520px;padding:6px;border-radius:8px;border:2px solid #032b3f}
     #legend{display:flex;gap:18px;justify-content:center;margin-bottom:6px}
     .flash{display:inline-block;padding:6px 10px;border-radius:6px;margin-left:8px}
     .danger{background:#441111;color:#ffd8d8}
@@ -34,7 +34,7 @@
 </head>
 <body>
   <div class="row">
-    <div class="card" style="display:flex;gap:18px;align-items:center">
+    <div class="card" style="display:flex;gap:18px;align-items:center;padding:20px">
       <div><div class="small">ACTUAL</div><div id="actual" class="big">0.0</div><div class="small">km/h</div></div>
       <div><div class="small">TARGET</div><div id="target" class="big">0.0</div><div class="small">km/h</div></div>
       <div style="display:flex;flex-direction:column;align-items:center;min-width:80px"><div class="small">ELAPSED</div><div id="time" style="font-size:24px;font-weight:bold;text-align:center;padding:4px 8px;min-height:32px;display:flex;align-items:center;justify-content:center">0.00</div><div class="small">seconds</div></div>
@@ -104,7 +104,7 @@
   </div>
 
 <script>
-const WS_URL = "ws://localhost:8765";
+const WS_URL = "ws://localhost:8080";
 let ws = null;
 let profile = {time:[], target:[], upper:[], lower:[]};
 let chart = null;
