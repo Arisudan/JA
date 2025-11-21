@@ -1,3 +1,14 @@
+sudo /home/psg/project/myenv/bin/python3 backend.py --profile drive_cycles.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
+
+
+
+
+
+
+
+
+
+
 (myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycles.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
 [GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
 [MAIN] backend starting with profile: drive_cycles.csv
