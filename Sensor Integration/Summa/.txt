@@ -6,7 +6,8 @@ sudo cp /etc/udev/rules.d/99-com.rules /etc/udev/rules.d/99-gpio.rules
 
 
 
-
+```bash
+sudo /home/psg/project/myenv/bin/python3 backend.py --profile drive_cycle.csv --use-gpio
 
 
 
