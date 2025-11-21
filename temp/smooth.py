@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-backend.py - Noise Filtered + Smooth Analog Physics
+backend.py - 5Hz Smooth Version (Standard Smoothing)
 """
 import asyncio
 import websockets
 import json
 import time
 import csv
-import math
 import threading
 import argparse
 import os
@@ -21,12 +20,14 @@ TOLERANCE_KMH = 2.0
 LOG_DIR = 'logs' 
 HALL_SENSOR_PIN = 17
 WHEEL_CIRCUMFERENCE = 2.04 
-MAGNETS_PER_WHEEL = 1
 TIMEOUT_SECONDS = 3.0       
 
-# --- NOISE FILTER SETTINGS ---
-DEBOUNCE_TIME = 0.05  # Ignore pulses faster than 50ms (Max readable speed ~145 km/h)
-MAX_REALISTIC_SPEED = 120.0 # Ignore any spike above this (Physics Sanity Check)
+# --- SMOOTHING SETTINGS ---
+# 5Hz = 0.2 seconds per update
+TICK_RATE = 0.2 
+# Smoothing Factor (0.0 to 1.0). Higher = Smoother but slower. Lower = Faster but jerkier.
+# 0.85 is very smooth.
+SMOOTHING_FACTOR = 0.85 
 
 # Try to import GPIO
 try:
@@ -39,18 +40,17 @@ except ImportError:
 profile_data = []
 test_state = { 
     "running": False, "start_time": 0, "elapsed": 0.0, 
-    "violations": 0, "actual_speed": 0.0, "manual_speed": 0.0, 
+    "violations": 0, "actual_speed": 0.0, 
     "is_outside": False 
 }
 clients = set()
 
-# --- SPEED VARIABLES ---
+# --- SPEED CALCULATION ---
 last_pulse_time = 0.0
-last_raw_speed = 0.0
+current_speed_kmh = 0.0
 display_speed = 0.0
 pulse_lock = threading.Lock()
 polling_active = False
-last_loop_time = time.monotonic()
 
 # --- LOGGING SYSTEM ---
 current_log_file = None
@@ -74,23 +74,23 @@ def start_new_log():
     try:
         current_log_file = open(filename, 'w', newline='')
         current_csv_writer = csv.writer(current_log_file)
-        header = ["Time", "Target", "Actual", "Upper_Limit", "Lower_Limit", "Violations"]
+        header = ["Time", "Target", "Actual", "Upper_Limit", "Lower_Limit"]
         current_csv_writer.writerow(["# Hero Drive Cycle Report"])
         current_csv_writer.writerow([f"# Start: {session_start_str}"])
         current_csv_writer.writerow([])
         current_csv_writer.writerow(header)
         current_log_file.flush()
         last_log_content = ",".join(header) + "\n"
-        print(f"[LOG] Logging to {filename}")
+        print(f"[LOG] Started: {filename}")
     except Exception as e: print(f"[LOG] Error: {e}")
 
-def log_data_point(t, tgt, act, up, lo, viol):
+def log_data_point(t, tgt, act, up, lo):
     global last_log_content, last_logged_int_sec
     current_int_sec = int(t)
     if current_int_sec > last_logged_int_sec:
         if current_csv_writer and current_log_file:
             try:
-                row = [current_int_sec, f"{tgt:.1f}", f"{act:.1f}", f"{up:.1f}", f"{lo:.1f}", viol]
+                row = [current_int_sec, f"{tgt:.1f}", f"{act:.1f}", f"{up:.1f}", f"{lo:.1f}"]
                 current_csv_writer.writerow(row)
                 current_log_file.flush() 
                 os.fsync(current_log_file.fileno()) 
@@ -99,33 +99,27 @@ def log_data_point(t, tgt, act, up, lo, viol):
             except: pass
 
 def stop_logging():
-    global current_log_file, current_csv_writer
+    global current_log_file
     if current_log_file:
         try: current_log_file.close()
         except: pass
         current_log_file = None
-        current_csv_writer = None
 
-# --- SENSOR LOGIC (NOISE FILTERED) ---
+# --- SENSOR LOGIC ---
 def process_pulse():
-    global last_pulse_time, last_raw_speed
+    global last_pulse_time, current_speed_kmh
     current_time = time.monotonic()
     
     with pulse_lock:
         delta_time = current_time - last_pulse_time
         
-        # 1. DEBOUNCE: Ignore noise (pulses closer than 50ms)
-        if delta_time > DEBOUNCE_TIME:
+        # Debounce 50ms
+        if delta_time > 0.05: 
             if last_pulse_time != 0:
                 speed_mps = WHEEL_CIRCUMFERENCE / delta_time
                 new_raw_speed = speed_mps * 3.6
-                
-                # 2. SANITY CHECK: Ignore impossible speeds (e.g. > 120km/h)
-                if new_raw_speed < MAX_REALISTIC_SPEED:
-                    last_raw_speed = new_raw_speed
-                    # print(f"[SENSOR] Pulse! Speed: {last_raw_speed:.1f}")
-                else:
-                    print(f"[FILTER] Ignored Noise Spike: {new_raw_speed:.1f} km/h")
+                # Update raw speed immediately on pulse
+                current_speed_kmh = new_raw_speed
             
             last_pulse_time = current_time
 
@@ -157,35 +151,28 @@ def setup_hardware(pin):
             threading.Thread(target=polling_thread_func, args=(pin,), daemon=True).start()
     except Exception as e: print(f"[HW] Error: {e}")
 
-def calculate_physics_speed():
-    """
-    Simulates analog needle physics to smooth out the graph.
-    """
-    global display_speed, last_raw_speed
+def get_smoothed_speed():
+    global display_speed, current_speed_kmh
     
-    if SIMULATION_MODE: return test_state["manual_speed"]
+    # 1. Check for Timeout (Stop)
+    if time.monotonic() - last_pulse_time > TIMEOUT_SECONDS:
+        current_speed_kmh = 0.0
     
-    now = time.monotonic()
-    time_since_pulse = now - last_pulse_time
-    
-    # 1. Predictive Decay (Coast down logic)
-    if time_since_pulse > 0.1:
+    # 2. Apply Smooth Decay if no pulse for a while
+    # This prevents the line from staying flat if you slow down gently
+    time_since_pulse = time.monotonic() - last_pulse_time
+    if time_since_pulse > 0.2:
         max_theoretical = (WHEEL_CIRCUMFERENCE / time_since_pulse) * 3.6
-        if last_raw_speed > max_theoretical:
-            last_raw_speed = max_theoretical 
+        if current_speed_kmh > max_theoretical:
+            current_speed_kmh = max_theoretical
 
-    # 2. Timeout (Stop)
-    if time_since_pulse > TIMEOUT_SECONDS:
-        last_raw_speed = 0.0
-        
-    # 3. Smooth Inertia (The "Heavy Needle" Effect)
-    # Move 15% closer to target per frame
-    diff = last_raw_speed - display_speed
-    display_speed += diff * 0.15 
+    # 3. Apply Exponential Smoothing for Display
+    # This slides the yellow line towards the real speed
+    display_speed = (display_speed * SMOOTHING_FACTOR) + (current_speed_kmh * (1.0 - SMOOTHING_FACTOR))
     
     return display_speed
 
-# --- CSV LOADING & WEBSOCKET ---
+# --- CSV UTILS ---
 def load_profile():
     global profile_data
     profile_data = []
@@ -243,20 +230,20 @@ async def handler(ws):
                 test_state.update({"running":False, "elapsed":0, "violations":0, "is_outside":False})
                 await broadcast({"type":"reset"})
             elif cmd == 'download_log':
-                end_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                end = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 await ws.send(json.dumps({
                     "type": "csv_download", 
                     "content": last_log_content,
-                    "meta": { "start": session_start_str if session_start_str else "N/A", "end": end_time_str }
+                    "meta": { "start": session_start_str if session_start_str else "N/A", "end": end }
                 }))
             elif cmd == 'sensor_status':
-                active = calculate_physics_speed() > 0.1
+                active = get_smoothed_speed() > 0.1
                 await ws.send(json.dumps({
                     "type": "sensor_status",
                     "sensor_active": active,
                     "gpio_pin": HALL_SENSOR_PIN,
                     "gpio_level": "LOW" if active else "HIGH",
-                    "current_speed": f"{calculate_physics_speed():.1f}"
+                    "current_speed": f"{get_smoothed_speed():.1f}"
                 }))
     except: pass
     finally: clients.remove(ws)
@@ -266,22 +253,21 @@ async def broadcast(msg):
 
 async def loop():
     while True:
-        act = calculate_physics_speed()
+        act = get_smoothed_speed()
         test_state['actual_speed'] = act
         
         if test_state['running']:
             test_state['elapsed'] = time.time() - test_state['start_time']
             t = test_state['elapsed']
             tgt, up, lo = get_targets(t)
+            
+            # Check violation but don't count/show if user doesn't want it
             outside = (act > up) or (act < lo)
+            if t > 5.0 and outside and not test_state['is_outside']:
+                test_state['violations'] += 1
             
-            if t > 5.0:
-                if outside and not test_state['is_outside']:
-                    test_state['violations'] += 1
-                    await broadcast({"type":"violation", "time":t, "violations":test_state['violations'], "side":("upper" if act>up else "lower"), "actual":act})
             test_state['is_outside'] = outside
-            
-            log_data_point(t, tgt, act, up, lo, test_state['violations'])
+            log_data_point(t, tgt, act, up, lo)
             
             if profile_data and t >= profile_data[-1]['time']:
                 test_state['running'] = False
@@ -292,7 +278,8 @@ async def loop():
         else:
             await broadcast({"type":"update", "time":test_state['elapsed'], "actual":act, "violations":test_state['violations']})
         
-        await asyncio.sleep(0.1)
+        # 5Hz Loop (0.2 seconds)
+        await asyncio.sleep(TICK_RATE)
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -301,15 +288,14 @@ async def main():
     parser.add_argument('--use-gpio', action='store_true')
     args = parser.parse_args()
 
-    global DRIVE_CYCLE_FILE, HALL_SENSOR_PIN, SIMULATION_MODE
+    global DRIVE_CYCLE_FILE, HALL_SENSOR_PIN
     DRIVE_CYCLE_FILE = args.profile
     HALL_SENSOR_PIN = args.gpio_pin
-    if args.use_gpio: SIMULATION_MODE = False
     
     setup_logging()
     setup_hardware(HALL_SENSOR_PIN)
     load_profile()
-    print(f"Server running on ws://0.0.0.0:{PORT}")
+    print(f"Server running on ws://0.0.0.0:{PORT} at 5Hz")
     
     asyncio.create_task(loop())
     async with websockets.serve(handler, "0.0.0.0", PORT) as server:
