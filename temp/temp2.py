@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backend.py - Robust Version + CSV Logging + Download Support
+backend.py - Fixed for Websockets v14+ (Removed 'path' argument)
 """
 import asyncio
 import websockets
@@ -18,7 +18,7 @@ SIMULATION_MODE = False
 DRIVE_CYCLE_FILE = 'drive_cycle.csv'
 PORT = 8765
 TOLERANCE_KMH = 2.0
-LOG_DIR = 'logs'  # Folder to save test runs
+LOG_DIR = 'logs' 
 
 # --- VEHICLE PHYSICS ---
 HALL_SENSOR_PIN = 17
@@ -51,7 +51,7 @@ polling_active = False
 # --- LOGGING SYSTEM ---
 current_log_file = None
 current_csv_writer = None
-last_log_content = "" # Store content in memory for quick download
+last_log_content = "" 
 
 def setup_logging():
     if not os.path.exists(LOG_DIR):
@@ -64,10 +64,8 @@ def start_new_log():
     try:
         current_log_file = open(filename, 'w', newline='')
         current_csv_writer = csv.writer(current_log_file)
-        # Write Header
         current_csv_writer.writerow(["Time", "Target", "Actual", "Upper_Limit", "Lower_Limit", "Violations"])
         print(f"[LOG] Started logging to {filename}")
-        # Clear memory buffer
         last_log_content = "Time,Target,Actual,Upper_Limit,Lower_Limit,Violations\n"
     except Exception as e:
         print(f"[LOG] Error creating log file: {e}")
@@ -78,7 +76,6 @@ def log_data_point(t, tgt, act, up, lo, viol):
         try:
             row = [f"{t:.2f}", f"{tgt:.1f}", f"{act:.1f}", f"{up:.1f}", f"{lo:.1f}", viol]
             current_csv_writer.writerow(row)
-            # Append to memory buffer for download
             last_log_content += ",".join(map(str, row)) + "\n"
         except: pass
 
@@ -99,7 +96,7 @@ def process_pulse():
     current_time = time.time()
     with pulse_lock:
         delta_time = current_time - last_pulse_time
-        if delta_time > 0.01: # Debounce 10ms
+        if delta_time > 0.01: 
             if last_pulse_time != 0:
                 speed_mps = WHEEL_CIRCUMFERENCE / delta_time
                 new_speed = speed_mps * 3.6
@@ -163,7 +160,6 @@ def load_profile():
                         })
                     except: pass
             else:
-                # Fallback
                 f.seek(0)
                 for i, row in enumerate(csv.reader(f)):
                     if row: profile_data.append({'time': i*1.0, 'target': float(row[0]), 'upper': float(row[0])+2, 'lower': max(0, float(row[0])-2)})
@@ -180,10 +176,10 @@ def get_targets(t):
             return (p1['target'] + (p2['target']-p1['target'])*r), (p1['upper'] + (p2['upper']-p1['upper'])*r), (p1['lower'] + (p2['lower']-p1['lower'])*r)
     return 0,0,0
 
-async def handler(ws, path):
+# --- FIXED HANDLER (Removed 'path' argument) ---
+async def handler(ws):
     clients.add(ws)
     try:
-        # Send Profile
         times = [p['time'] for p in profile_data]
         targets = [p['target'] for p in profile_data]
         uppers = [p['upper'] for p in profile_data]
@@ -207,7 +203,6 @@ async def handler(ws, path):
             elif cmd == 'manual_speed':
                 test_state['manual_speed'] = float(m.get('speed', 0))
             elif cmd == 'download_log':
-                # Send the CSV content to the frontend
                 await ws.send(json.dumps({"type": "csv_download", "content": last_log_content}))
                 
     except: pass
@@ -233,7 +228,6 @@ async def loop():
                     await broadcast({"type":"violation", "time":t, "violations":test_state['violations'], "side":("upper" if act>up else "lower"), "actual":act})
             test_state['is_outside'] = outside
             
-            # LOG DATA TO FILE
             log_data_point(t, tgt, act, up, lo, test_state['violations'])
             
             if profile_data and t >= profile_data[-1]['time']:
@@ -264,7 +258,7 @@ async def main():
     print(f"Server running on ws://0.0.0.0:{PORT}")
     
     asyncio.create_task(loop())
-    async with websockets.serve(handler, "0.0.0.0", PORT):
+    async with websockets.serve(handler, "0.0.0.0", PORT) as server:
         await asyncio.Future()
 
 if __name__ == "__main__":
