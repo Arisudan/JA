@@ -43,15 +43,19 @@
 
       <!-- Right side controls -->
       <div style="display:flex;gap:16px;align-items:center">
-        <label><div class="small">MODE</div>
-          <select id="mode" style="padding:8px 12px;font-size:16px;font-weight:bold;border-radius:6px;border:2px solid #4CAF50;background:#0c1620;color:#dfe9f3;min-width:100px;cursor:pointer"><option value="manual">Manual</option><option value="real">Real</option></select>
-        </label>
+        <div style="display:flex;flex-direction:column;align-items:center;min-width:150px">
+          <div class="small">SENSOR STATUS</div>
+          <div id="sensorStatus" style="font-size:14px;font-weight:bold;color:#40e37a;text-align:center;line-height:1.3;padding:4px 8px;background:#1a2a1a;border-radius:4px;min-width:140px">
+            NPN Sensor IDLE<br>
+            Pin 17: HIGH<br>
+            Speed: 0.0 km/h
+          </div>
+        </div>
 
-        <label><div class="small">MANUAL SPEED</div>
-          <input id="slider" type="range" min="0" max="100" step="0.1" value="0" style="width:200px">
-          <div id="sliderVal" class="small">0.0 km/h</div>
-          <div id="realModeIndicator" class="small" style="display:none;color:#40e37a;font-weight:bold;text-align:center;line-height:1.2">NPN Sensor IDLE<br>Speed: 0.0 km/h</div>
-        </label>
+        <div style="display:flex;flex-direction:column;align-items:center;min-width:120px">
+          <div class="small">PULSE RATE</div>
+          <div id="pulseRate" style="font-size:18px;font-weight:bold;color:#ffd400;text-align:center;padding:4px 8px;background:#2a2010;border-radius:4px;min-width:100px">0 PPS</div>
+        </div>
 
         <label><div class="small">WINDOW (s)</div>
           <input id="window" type="number" min="5" max="300" value="10" style="width:50px">
@@ -115,21 +119,24 @@ function handleMsg(obj) {
     document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
     document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
     
-    // Update mode-specific indicators
-    const currentMode = document.getElementById('mode').value;
-    if (currentMode === 'real' && obj.actual !== undefined) {
-      // Update real mode indicator with current NPN sensor speed
-      const realModeIndicator = document.getElementById('realModeIndicator');
-      if (realModeIndicator.style.display !== 'none') {
-        const sensorStatus = obj.actual > 0.1 ? "ACTIVE" : "IDLE";
-        realModeIndicator.innerHTML = `NPN Sensor ${sensorStatus}<br>Speed: ${obj.actual.toFixed(1)} km/h`;
-      }
-    } else if (currentMode === 'manual') {
-      // Ensure manual mode display is working
-      const sliderVal = document.getElementById('sliderVal');
-      if (sliderVal.style.display === 'none') {
-        sliderVal.style.display = 'block';
-      }
+    // Update sensor status display
+    if (obj.actual !== undefined) {
+      const sensorStatus = document.getElementById('sensorStatus');
+      const pulseRate = document.getElementById('pulseRate');
+      
+      // Update sensor status based on speed
+      const isActive = obj.actual > 0.1;
+      const statusText = isActive ? "ACTIVE" : "IDLE";
+      const statusColor = isActive ? "#40e37a" : "#9fb0c9";
+      
+      // Estimate pulse rate from speed (approximate)
+      const estimatedPPS = Math.round((obj.actual / 3.6) / 1.94); // Convert km/h to estimated pulses per second
+      
+      sensorStatus.innerHTML = `NPN Sensor ${statusText}<br>Pin 17: ${isActive ? 'LOW' : 'HIGH'}<br>Speed: ${obj.actual.toFixed(1)} km/h`;
+      sensorStatus.style.color = statusColor;
+      
+      pulseRate.innerText = `${estimatedPPS} PPS`;
+      pulseRate.style.color = isActive ? "#ffd400" : "#9fb0c9";
     }
     
     // Update violation count (backend uses CMVR/AIS 0.20s rule internally)
@@ -180,9 +187,25 @@ function handleMsg(obj) {
     document.getElementById('time').innerText = "0.00";
     document.getElementById('viol').innerText = "0";
     document.getElementById('viol').setAttribute('data-last', '0');
-    // Reset slider
-    document.getElementById('slider').value = 0;
-    document.getElementById('sliderVal').innerText = "0.0 km/h";
+    
+    // Reset sensor displays
+    document.getElementById('sensorStatus').innerHTML = 'NPN Sensor IDLE<br>Pin 17: HIGH<br>Speed: 0.0 km/h';
+    document.getElementById('sensorStatus').style.color = '#9fb0c9';
+    document.getElementById('pulseRate').innerText = '0 PPS';
+    document.getElementById('pulseRate').style.color = '#9fb0c9';
+  } else if (obj.type === 'sensor_status') {
+    // Handle real-time sensor status updates
+    const sensorStatus = document.getElementById('sensorStatus');
+    const pulseRate = document.getElementById('pulseRate');
+    
+    const statusText = obj.sensor_active ? "ACTIVE" : "IDLE";  
+    const statusColor = obj.sensor_active ? "#40e37a" : "#9fb0c9";
+    
+    sensorStatus.innerHTML = `NPN Sensor ${statusText}<br>Pin ${obj.gpio_pin}: ${obj.gpio_level}<br>Speed: ${obj.current_speed} km/h`;
+    sensorStatus.style.color = statusColor;
+    
+    pulseRate.innerText = `${obj.pulses_per_second} PPS`;
+    pulseRate.style.color = obj.sensor_active ? "#ffd400" : "#9fb0c9";
   } else if (obj.type === 'complete') {
     isDataCollectionActive = false;
     alert(`Profile complete. Violations: ${obj.violations}\nTest data collected: ${downloadData.length} data points\nUse the Download button to save results.`);
@@ -325,78 +348,13 @@ document.getElementById('resetBtn').onclick = ()=> {
   document.getElementById('viol').innerText = "0";
   document.getElementById('viol').setAttribute('data-last', '0');
   
-  // Reset controls based on current mode
-  const currentMode = document.getElementById('mode').value;
-  if (currentMode === 'manual') {
-    // Reset manual controls
-    document.getElementById('slider').value = 0;
-    document.getElementById('sliderVal').innerText = "0.0 km/h";
-    // Send reset speed to backend
-    sendCmd({cmd:'manual_speed', speed: 0});
-  } else {
-    // Reset real mode indicator
-    const realModeIndicator = document.getElementById('realModeIndicator');
-    if (realModeIndicator.style.display !== 'none') {
-      realModeIndicator.innerText = "Real Sensor Active";
-    }
-  }
-  
-  // Ensure UI elements are in correct state for current mode
-  const slider = document.getElementById('slider');
-  const sliderVal = document.getElementById('sliderVal');
-  const realModeIndicator = document.getElementById('realModeIndicator');
-  
-  if (currentMode === 'manual') {
-    slider.disabled = false;
-    slider.style.opacity = '1';
-    sliderVal.style.display = 'block';
-    realModeIndicator.style.display = 'none';
-  } else {
-    slider.disabled = true;
-    slider.style.opacity = '0.3';
-    sliderVal.style.display = 'none';
-    realModeIndicator.style.display = 'block';
-  }
+  // Request sensor status update
+  sendCmd({cmd:'sensor_status'});
 };
-document.getElementById('mode').onchange = (e)=> {
-  const mode = e.target.value;
-  sendCmd({cmd:'set_mode', mode: mode});
-  
-  // Handle UI changes based on mode
-  const slider = document.getElementById('slider');
-  const sliderVal = document.getElementById('sliderVal');
-  const realModeIndicator = document.getElementById('realModeIndicator');
-  
-  if (mode === 'real') {
-    // Disable manual controls when in real mode
-    slider.disabled = true;
-    slider.style.opacity = '0.3';
-    sliderVal.style.display = 'none';
-    realModeIndicator.style.display = 'block';
-    console.log('[MODE] Switched to REAL sensor mode - manual slider disabled');
-  } else {
-    // Enable manual controls when in manual mode
-    slider.disabled = false;
-    slider.style.opacity = '1';
-    sliderVal.style.display = 'block';
-    realModeIndicator.style.display = 'none';
-    
-    // Re-send current manual speed to ensure backend uses manual mode
-    const currentSpeed = parseFloat(slider.value);
-    sendCmd({cmd:'manual_speed', speed: currentSpeed});
-    console.log(`[MODE] Switched to MANUAL mode - slider controls enabled, speed set to ${currentSpeed.toFixed(1)} km/h`);
-  }
-};
-const slider = document.getElementById('slider');
-const sliderVal = document.getElementById('sliderVal');
-slider.oninput = (e)=> {
-  // Only send manual speed commands if not disabled (i.e., not in real mode)
-  if (!e.target.disabled) {
-    const v = parseFloat(e.target.value);
-    sliderVal.innerText = v.toFixed(1) + " km/h";
-    sendCmd({cmd:'manual_speed', speed: v});
-  }
-};
+// Auto-request sensor status every 2 seconds for real-time updates
+setInterval(() => {
+  sendCmd({cmd:'sensor_status'});
+}, 2000);
 document.getElementById('window').onchange = (e)=> {
   let v = parseFloat(e.target.value) || 10;
   windowSeconds = Math.max(5, Math.min(300, v));
