@@ -20,6 +20,14 @@
     #downloadMenu button:hover{background:#1a2a3a}
     .download-btn{background:#4CAF50!important;color:#fff!important}
     .download-btn:hover{background:#45a049!important}
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
+    .sensor-active {
+      animation: pulse 1s infinite;
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -57,6 +65,13 @@
           <div id="pulseRate" style="font-size:18px;font-weight:bold;color:#ffd400;text-align:center;padding:4px 8px;background:#2a2010;border-radius:4px;min-width:100px">0 PPS</div>
         </div>
 
+        <div style="display:flex;flex-direction:column;align-items:center;min-width:120px">
+          <div class="small">GPIO PIN</div>
+          <div id="gpioPin" style="font-size:16px;font-weight:bold;color:#40e37a;text-align:center;padding:4px 8px;background:#1a2a1a;border-radius:4px;min-width:100px">Pin 17</div>
+        </div>
+
+
+
         <label><div class="small">WINDOW (s)</div>
           <input id="window" type="number" min="5" max="300" value="10" style="width:50px">
         </label>
@@ -84,10 +99,17 @@
   <div style="margin-top:10px">
     <div id="flash" class="flash" style="display:none"></div>
     <div id="wsstatus" style="display:inline-block;margin-left:8px">WS: <span id="wsval">—</span></div>
+    
+    <!-- Real-time sensor indicator (like LED status) -->
+    <div style="display:inline-block;margin-left:20px">
+      <span style="color:#9fb0c9;font-size:12px">NPN SENSOR:</span>
+      <div id="sensorLED" style="display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;margin-left:5px;transition:all 0.3s"></div>
+      <span id="sensorModeText" style="color:#9fb0c9;font-size:10px;margin-left:5px">MONITORING</span>
+    </div>
   </div>
 
 <script>
-const WS_URL = "ws://localhost:8765";
+const WS_URL = "ws://localhost:8766";
 let ws = null;
 let profile = {time:[], target:[], upper:[], lower:[]};
 let chart = null;
@@ -194,18 +216,81 @@ function handleMsg(obj) {
     document.getElementById('pulseRate').innerText = '0 PPS';
     document.getElementById('pulseRate').style.color = '#9fb0c9';
   } else if (obj.type === 'sensor_status') {
-    // Handle real-time sensor status updates
+    // Handle real-time sensor status updates (like your GPIO LED status)
     const sensorStatus = document.getElementById('sensorStatus');
     const pulseRate = document.getElementById('pulseRate');
+    const gpioPin = document.getElementById('gpioPin');
+    const lastUpdate = document.getElementById('lastUpdate');
     
-    const statusText = obj.sensor_active ? "ACTIVE" : "IDLE";  
+    const statusText = obj.sensor_active ? "DETECTING" : "IDLE";  
     const statusColor = obj.sensor_active ? "#40e37a" : "#9fb0c9";
+    const pinColor = obj.gpio_level === "LOW" ? "#ff6b6b" : "#40e37a";
     
+    // Update sensor status (like monitoring LED state)
     sensorStatus.innerHTML = `NPN Sensor ${statusText}<br>Pin ${obj.gpio_pin}: ${obj.gpio_level}<br>Speed: ${obj.current_speed} km/h`;
     sensorStatus.style.color = statusColor;
+    sensorStatus.style.background = obj.sensor_active ? "#1a2a1a" : "#2a1a1a";
     
+    // Update pulse rate with animation when active
     pulseRate.innerText = `${obj.pulses_per_second} PPS`;
     pulseRate.style.color = obj.sensor_active ? "#ffd400" : "#9fb0c9";
+    if (obj.sensor_active) {
+      pulseRate.style.animation = "pulse 0.5s ease-in-out";
+      setTimeout(() => pulseRate.style.animation = "", 500);
+    }
+    
+    // Update GPIO pin status with color coding
+    gpioPin.innerText = `Pin ${obj.gpio_pin}`;
+    gpioPin.style.color = pinColor;
+    gpioPin.style.background = obj.gpio_level === "LOW" ? "#2a1010" : "#1a2a1a";
+    
+    // Update timestamp display in sensor status instead of separate timer
+    const timestamp = obj.timestamp || new Date().toLocaleTimeString();
+    sensorStatus.setAttribute('title', `Last update: ${timestamp}`);
+    
+    // Update sensor LED indicator (like your GPIO LED ON/OFF)
+    const sensorLED = document.getElementById('sensorLED');
+    if (obj.sensor_active) {
+      sensorLED.style.background = "#40e37a";  // Green when detecting (LED ON)
+      sensorLED.style.boxShadow = "0 0 10px #40e37a";
+    } else {
+      sensorLED.style.background = "#666";     // Gray when idle (LED OFF)
+      sensorLED.style.boxShadow = "none";
+    }
+    
+    // Visual feedback when sensor is active (like LED ON/OFF)
+    if (obj.sensor_active) {
+      document.body.style.borderTop = "3px solid #40e37a";
+      setTimeout(() => document.body.style.borderTop = "", 200);
+    }
+  } else if (obj.type === 'sensor_realtime') {
+    // Handle real-time sensor detection values (like your GPIO test code output)
+    const sensorStatus = document.getElementById('sensorStatus');
+    const sensorLED = document.getElementById('sensorLED');
+    
+    // Show raw sensor detection state (like your test code LOW/HIGH messages)
+    const detectionText = obj.sensor_active ? "DETECTING" : "IDLE";
+    const stateColor = obj.sensor_active ? "#ff6b6b" : "#40e37a";  // Red when detecting, green when idle
+    
+    // Update sensor status with real-time values (enhanced version of your test output)
+    sensorStatus.innerHTML = `NPN Sensor ${detectionText}<br>${obj.gpio_state}<br>Value: ${obj.raw_value}<br>Speed: ${obj.current_speed} km/h`;
+    sensorStatus.style.color = stateColor;
+    sensorStatus.style.background = obj.sensor_active ? "#2a1010" : "#1a2a1a";
+    
+    // Update LED indicator with real-time detection (like your test code state changes)
+    if (obj.sensor_active) {
+      sensorLED.style.background = "#ff6b6b";  // Red when detecting (like your LOW state)
+      sensorLED.style.boxShadow = "0 0 15px #ff6b6b";
+      sensorLED.classList.add('sensor-active');
+    } else {
+      sensorLED.style.background = "#40e37a";  // Green when idle (like your HIGH state) 
+      sensorLED.style.boxShadow = "0 0 8px #40e37a";
+      sensorLED.classList.remove('sensor-active');
+    }
+    
+    // Console log for debugging (like your test code terminal output)
+    console.log(`[${obj.detection_time}] GPIO Pin ${obj.gpio_pin}: ${obj.gpio_state} | Raw: ${obj.raw_value} | Speed: ${obj.current_speed} km/h`);
+    
   } else if (obj.type === 'complete') {
     isDataCollectionActive = false;
     alert(`Profile complete. Violations: ${obj.violations}\nTest data collected: ${downloadData.length} data points\nUse the Download button to save results.`);
