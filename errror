@@ -1,3 +1,4 @@
+psg@raspberrypi:~/project $ source myenv/bin/activate
 (myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
 [GPIO] RPi.GPIO not available - Running in simulation mode (Windows/Linux without GPIO)
 [MAIN] backend starting with profile: drive_cycle.csv
@@ -7,5 +8,5 @@
 [BACKEND] loop 10Hz profile_end=1379.0s GPIO=off debounce=0.05s
 [WS] profile + snapshot sent
 [WS] profile + snapshot sent
+[WS] profile + snapshot sent
 [CMD] Mode set to REAL but GPIO not enabled! Use --use-gpio flag to enable NPN sensor input
-
