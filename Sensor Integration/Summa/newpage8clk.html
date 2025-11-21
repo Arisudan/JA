@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hero Drive Cycle - Rider's Aid</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/1.4.0/chartjs-plugin-annotation.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { background: #061018; color: #dfe9f3; font-family: Arial, Helvetica, sans-serif; margin: 8px; font-size: 14px; overflow: hidden; }
+        .card { background: #0c1620; padding: 8px; border-radius: 6px; box-shadow: 0 3px 10px rgba(0,0,0,0.6); }
+        .big { font-size: 80px; font-weight: 900; text-align: center; line-height: 1; }
+        .small { font-size: 11px; color: #9fb0c9; text-align: center; margin-top: 4px; }
+        button { border: 0; cursor: pointer; transition: all 0.2s; }
+        button:hover { filter: brightness(110%); }
+        .start { background: #7ef27c; color: #000; }
+        .stop { background: #ff6b6b; color: #fff; }
+        .reset { background: #666; color: #fff; }
+        #chartWrap { margin-top: 12px; height: 60vh; padding: 6px; border-radius: 8px; border: 2px solid #032b3f; position: relative; }
+        
+        @keyframes pulse { 0% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0.8; } 100% { transform: scale(1); opacity: 1; } }
+        .sensor-pulse { animation: pulse 0.5s infinite; background: #40e37a !important; box-shadow: 0 0 10px #40e37a; }
+        
+        .dropdown-content { display: none; position: absolute; right: 0; top: 100%; background-color: #1a2a3a; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 1; border-radius: 4px; border: 1px solid #374151; }
+        .dropdown-content button { color: #dfe9f3; padding: 12px 16px; text-decoration: none; display: block; width: 100%; text-align: left; background: none; }
+        .dropdown-content button:hover { background-color: #2d3748; }
+        .show { display: block; }
+    </style>
+</head>
+<body class="h-screen flex flex-col gap-2 p-2">
+
+    <div class="flex gap-4 h-32">
+        <div class="card flex gap-6 items-center px-6 min-w-max">
+            <div>
+                <div class="small">ACTUAL SPEED</div>
+                <div id="actual" class="big text-[#40e37a]">0.0</div>
+                <div class="small">km/h</div>
+            </div>
+            <div class="w-px h-16 bg-gray-700"></div>
+            <div>
+                <div class="small">TARGET</div>
+                <div id="target" class="big text-white" style="font-size: 60px;">0.0</div>
+                <div class="small">km/h</div>
+            </div>
+            <div class="w-px h-16 bg-gray-700"></div>
+            <div class="flex flex-col items-center min-w-[80px]">
+                <div class="small">ELAPSED</div>
+                <div id="time" class="text-3xl font-bold text-white my-1">0.00</div>
+                <div class="small">seconds</div>
+            </div>
+            <div class="flex flex-col items-center min-w-[80px]">
+                <div class="small">VIOLATIONS</div>
+                <div id="viol" class="text-3xl font-bold text-[#ff6b6b] bg-[#2a1010] px-3 py-1 rounded my-1">0</div>
+                <div class="small">count</div>
+            </div>
+        </div>
+
+        <div class="card flex-1 flex justify-between items-center px-6">
+            <div class="flex gap-4">
+                <button id="startBtn" class="start px-6 py-3 rounded font-bold text-lg">Start</button>
+                <button id="stopBtn" class="stop px-6 py-3 rounded font-bold text-lg">Stop</button>
+                <button id="resetBtn" class="reset px-6 py-3 rounded font-bold text-lg">Reset</button>
+            </div>
+
+            <div class="flex gap-4 items-center">
+                <div class="flex flex-col items-end mr-4">
+                    <div class="text-[10px] text-gray-400 mb-1">SENSOR STATUS</div>
+                    <div class="flex items-center gap-2 bg-[#1a2a1a] px-3 py-1 rounded border border-gray-800">
+                        <div id="sensorLED" class="w-3 h-3 rounded-full bg-gray-600"></div>
+                        <div class="text-right">
+                            <div id="sensorText" class="text-xs font-bold text-gray-400">IDLE</div>
+                            <div id="pinText" class="text-[10px] text-gray-500">PIN 17: HIGH</div>
+                        </div>
+                    </div>
+                </div>
+
+                <label class="flex flex-col items-center">
+                    <div class="small">WINDOW (s)</div>
+                    <input id="window" type="number" min="5" max="300" value="20" class="w-14 bg-gray-800 text-white text-center border border-gray-600 rounded p-1">
+                </label>
+
+                <div class="relative">
+                    <button id="downloadBtn" class="bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded flex items-center gap-2">
+                        <span>📥</span> Export
+                    </button>
+                    <div id="downloadDropdown" class="dropdown-content">
+                        <button id="dlExcel">📊 Excel (.xlsx)</button>
+                        <button id="dlCsv">📄 CSV (.csv)</button>
+                        <button id="dlPng">🖼️ Image (.png)</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="chartWrap" class="card flex-1">
+        <canvas id="chart"></canvas>
+    </div>
+
+    <div class="flex justify-between items-center px-2 mt-1">
+        <div class="flex items-center gap-2">
+            <div id="wsStatus" class="w-3 h-3 rounded-full bg-red-500"></div>
+            <span class="text-xs text-gray-500">SYSTEM STATUS</span>
+        </div>
+        <div id="flashMsg" class="text-red-400 font-bold text-sm opacity-0 transition-opacity duration-500"></div>
+    </div>
+
+<script>
+    const WS_URL = "ws://localhost:8765"; 
+    let ws = null;
+    let chart = null;
+    let profileData = null; // Store full profile object: {time:[], target:[], upper:[], lower:[]}
+    let actualData = []; // Store only {x: time, y: actual} points
+    let violationMarkers = []; // Store only {x: time, y: actual} points for markers
+    let windowSeconds = 20;
+    let pendingDownloadType = null;
+    let lastLoggedTime = -1; // For high-fidelity data logging
+
+    // --- UI Elements ---
+    const els = {
+        actual: document.getElementById('actual'),
+        target: document.getElementById('target'),
+        time: document.getElementById('time'),
+        viol: document.getElementById('viol'),
+        start: document.getElementById('startBtn'),
+        stop: document.getElementById('stopBtn'),
+        reset: document.getElementById('resetBtn'),
+        wsDot: document.getElementById('wsStatus'),
+        sensorLed: document.getElementById('sensorLED'),
+        sensorText: document.getElementById('sensorText'),
+        pinText: document.getElementById('pinText'),
+        flash: document.getElementById('flashMsg'),
+        dlBtn: document.getElementById('downloadBtn'),
+        dlMenu: document.getElementById('downloadDropdown')
+    };
+    
+    // --- Data Storage for Download ---
+    let recordedData = []; 
+
+    // --- CHART SETUP ---
+    function initChart(profile) {
+        const ctx = document.getElementById('chart').getContext('2d');
+        
+        // Convert array data into {x: time, y: speed} objects for scatter plot compatibility
+        const profilePoints = (arr) => arr.map((v, i) => ({ x: profile.time[i], y: v }));
+
+        const upperPoints = profilePoints(profile.upper);
+        const lowerPoints = profilePoints(profile.lower);
+        const targetPoints = profilePoints(profile.target);
+        
+        // Reset data arrays
+        actualData = [];
+        violationMarkers = [];
+
+        if (chart) chart.destroy();
+
+        chart = new Chart(ctx, {
+            type: 'line', // Still use 'line' type for smooth interpolation
+            data: {
+                datasets: [
+                    // Use line chart type with scatter-style data {x, y}
+                    // Crucial setting: tension > 0 for smoothing
+                    { label: 'Upper', data: upperPoints, borderColor: '#ef4444', borderWidth: 1, pointRadius: 0, fill: '+1', backgroundColor: 'rgba(239, 68, 68, 0.05)', tension: 0.4 },
+                    { label: 'Lower', data: lowerPoints, borderColor: '#3b82f6', borderWidth: 1, pointRadius: 0, fill: false, tension: 0.4 },
+                    { label: 'Target', data: targetPoints, borderColor: '#10b981', borderWidth: 2, pointRadius: 0, borderDash: [0, 0], tension: 0.4 },
+                    { label: 'Actual', data: actualData, borderColor: '#fbbf24', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.4 }, // Smoother line
+                    { label: 'Violations', data: violationMarkers, type: 'scatter', pointStyle: 'crossRot', pointRadius: 8, pointBorderColor: 'red', pointBorderWidth: 3, showLine: false }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false, animation: false, // Turn off animation for real-time plot
+                scales: {
+                    x: { 
+                        type: 'linear', // Use linear scale for time (x-values)
+                        min: 0, max: windowSeconds, 
+                        grid: { color: '#1f2937' }, 
+                        ticks: { color: '#9ca3af' }, 
+                        title: { display: true, text: 'Time (s)', color: '#6b7280' } 
+                    },
+                    y: { 
+                        min: 0, max: 60, // Set max Y-axis for standard view
+                        grid: { color: '#1f2937' }, 
+                        ticks: { color: '#9ca3af', font: {size: 14, weight: 'bold'} }, 
+                        title: { display: true, text: 'Speed (km/h)', color: '#6b7280' } 
+                    }
+                },
+                plugins: { 
+                    legend: { labels: { color: '#d1d5db' } },
+                    annotation: { annotations: { timeLine: { type: 'line', scaleID: 'x', value: 0, borderColor: 'white', borderWidth: 1, borderDash: [4, 4] } } }
+                }
+            }
+        });
+    }
+
+    // --- WEBSOCKET ---
+    function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+            els.wsDot.classList.replace('bg-red-500', 'bg-green-500');
+            setInterval(() => ws.send(JSON.stringify({ cmd: "sensor_status" })), 500);
+        };
+        ws.onmessage = (e) => {
+            const msg = JSON.parse(e.data);
+            if (msg.type === "profile") {
+                profileData = msg.profile; // Store full profile
+                initChart(profileData);
+            } else if (msg.type === "update") {
+                updateDashboard(msg);
+                updateChartData(msg); // New function to handle chart updates
+                storeData(msg); // New function to handle data logging
+            } else if (msg.type === "violation") {
+                handleViolation(msg);
+            } else if (msg.type === "sensor_status") {
+                updateSensor(msg);
+            } else if (msg.type === "reset") {
+                resetUI();
+            }
+        };
+        ws.onclose = () => {
+            els.wsDot.classList.replace('bg-green-500', 'bg-red-500');
+            setTimeout(connect, 1000);
+        };
+    }
+
+    function send(cmd, data={}) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ cmd, ...data })); }
+
+    // --- CHART DATA UPDATE LOGIC ---
+    function updateChartData(data) {
+        if (!chart) return;
+        
+        // Add new point using {x, y} format for smooth linear scaling
+        actualData.push({ x: data.time, y: data.actual });
+        
+        // Optional: Keep only the last 30 seconds of data for performance
+        const maxTime = data.time;
+        const minTime = maxTime - (windowSeconds * 2); // Keep twice the window size
+
+        // Pruning for performance: Remove points older than minTime
+        chart.data.datasets.forEach(dataset => {
+            if (dataset.label === 'Actual' || dataset.label === 'Violations') {
+                dataset.data = dataset.data.filter(point => point.x > minTime);
+            }
+        });
+
+        // Auto-scroll logic (ensure current time is in the view, usually 20% from the right edge)
+        let leadPct = 0.2; // Keep the marker 20% from the right edge
+        let minX = Math.max(0, maxTime - (windowSeconds * (1 - leadPct)));
+        
+        chart.options.scales.x.min = minX;
+        chart.options.scales.x.max = minX + windowSeconds;
+        
+        // Update the timeline annotation
+        chart.options.plugins.annotation.annotations.timeLine.value = data.time;
+        
+        chart.update('none');
+    }
+    
+    // --- DATA LOGGING ---
+    function storeData(data) {
+         if (!data.running) return;
+
+         if (data.time !== lastLoggedTime) {
+            recordedData.push({ 
+                time: parseFloat(data.time.toFixed(3)),
+                target: parseFloat(data.target.toFixed(3)),
+                upper: parseFloat(data.upper.toFixed(3)),
+                lower: parseFloat(data.lower.toFixed(3)),
+                actual: parseFloat(data.actual.toFixed(3)),
+                violations: data.violations,
+                cmvr_timer: parseFloat(data.cmvr_timer.toFixed(3))
+            });
+            lastLoggedTime = data.time;
+        }
+    }
+
+
+    // --- UI/STATUS LOGIC (Minimal Changes) ---
+    function updateDashboard(data) {
+        els.actual.innerText = data.actual.toFixed(1);
+        els.target.innerText = data.target.toFixed(1);
+        els.time.innerText = data.time.toFixed(2); // Changed to 2 decimals for precision
+        els.viol.innerText = data.violations;
+    }
+
+    function handleViolation(data) {
+        if(chart) {
+            // Add marker only if it's a new violation count (the backend handles the CMVR 0.2s filter)
+            violationMarkers.push({x: data.time, y: data.actual});
+            chart.update('none');
+        }
+        els.flash.innerText = `VIOLATION: ${data.side.toUpperCase()} LIMIT`;
+        els.flash.style.opacity = 1;
+        setTimeout(() => els.flash.style.opacity = 0, 1500);
+    }
+
+    function updateSensor(data) {
+        // Simple sensor status based on speed (as backend logic is not fully integrated here)
+        const isActive = (data.current_speed || 0) > 0.1;
+        
+        if (isActive) {
+            els.sensorLed.classList.add('sensor-pulse');
+            els.sensorText.innerText = "ACTIVE";
+            els.sensorText.className = "text-xs font-bold text-[#40e37a]";
+            els.pinText.innerText = `PIN ${data.gpio_pin}: LOW`;
+        } else {
+            els.sensorLed.classList.remove('sensor-pulse');
+            els.sensorText.innerText = "IDLE";
+            els.sensorText.className = "text-xs font-bold text-gray-400";
+            els.pinText.innerText = `PIN ${data.gpio_pin}: HIGH`;
+        }
+    }
+
+    function resetUI() {
+        recordedData = [];
+        lastLoggedTime = -1;
+        if (chart) {
+            actualData.length = 0; // Clear array
+            violationMarkers.length = 0; // Clear array
+            chart.options.scales.x.min = 0;
+            chart.options.scales.x.max = windowSeconds;
+            // The profile data (datasets 0, 1, 2) is automatically preserved
+            chart.update();
+        }
+        els.actual.innerText = "0.0";
+        els.target.innerText = "0.0";
+        els.time.innerText = "0.00";
+        els.viol.innerText = "0";
+    }
+
+    // --- DOWNLOAD LOGIC (Restored from previous corrections) ---
+    function downloadExcel() {
+        if (recordedData.length === 0) { alert("No data recorded yet."); return; }
+        
+        const dataForExport = recordedData.map(d => ({
+            'Time (s)': d.time,
+            'Target Speed (km/h)': d.target,
+            'Upper Limit (km/h)': d.upper,
+            'Lower Limit (km/h)': d.lower,
+            'Actual Speed (km/h)': d.actual,
+            'Violations (Total)': d.violations,
+            'CMVR Timer (s)': d.cmvr_timer
+        }));
+
+        const ws = XLSX.utils.json_to_sheet(dataForExport);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Run Data");
+        XLSX.writeFile(wb, `Hero_Run_${Date.now()}.xlsx`);
+    }
+
+    function downloadCSV() {
+        if (recordedData.length === 0) { alert("No data recorded yet."); return; }
+        
+        const headers = ['Time (s)', 'Target Speed (km/h)', 'Upper Limit (km/h)', 'Lower Limit (km/h)', 'Actual Speed (km/h)', 'Violations (Total)', 'CMVR Timer (s)'];
+        
+        const csvRows = recordedData.map(r => 
+            `${r.time},${r.target},${r.upper},${r.lower},${r.actual},${r.violations},${r.cmvr_timer}`
+        ).join("\n");
+        
+        const csv = headers.join(",") + "\n" + csvRows;
+        
+        const blob = new Blob([csv], {type: 'text/csv'});
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `Hero_Run_${Date.now()}.csv`;
+        a.click();
+    }
+
+    function downloadImage() {
+        const link = document.createElement('a');
+        link.download = `Chart_${Date.now()}.png`;
+        link.href = document.getElementById('chart').toDataURL();
+        link.click();
+    }
+
+
+    // --- EVENT LISTENERS ---
+    els.start.onclick = () => send("start");
+    els.stop.onclick = () => send("stop");
+    els.reset.onclick = () => send("reset");
+    
+    document.getElementById('window').onchange = (e) => {
+        windowSeconds = Number(e.target.value);
+        if(chart) { 
+            // Recalculate max X based on new window size, preserving current position
+            chart.options.scales.x.max = chart.options.scales.x.min + windowSeconds; 
+            chart.update('none'); 
+        }
+    };
+
+    // Dropdown Logic
+    els.dlBtn.onclick = (e) => { e.stopPropagation(); els.dlMenu.classList.toggle('show'); };
+    window.onclick = () => els.dlMenu.classList.remove('show');
+    
+    document.getElementById('dlExcel').onclick = downloadExcel;
+    document.getElementById('dlCsv').onclick = downloadCSV;
+    document.getElementById('dlPng').onclick = downloadImage;
+
+    connect();
+</script>
+</body>
+</html>
