@@ -152,8 +152,42 @@ class DriveBackend:
                 print(f"[GPIO] NPN SENSOR - BCM{self.gpio_pin} configured with pull-up resistor")
                 print(f"[GPIO] Initial sensor state: {initial_state}")
                 print(f"[GPIO] Debounce time: {self.debounce*1000:.0f}ms")
+                print(f"[GPIO] SUCCESS - GPIO pin {self.gpio_pin} ready for NPN sensor input")
+                
+                # Test GPIO functionality
+                self._test_gpio_connection()
+        except PermissionError as e:
+            print(f"[GPIO] PERMISSION ERROR: {e}")
+            print(f"[GPIO] SOLUTION: Run with sudo privileges:")
+            print(f"[GPIO]   sudo myenv/bin/python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin {self.gpio_pin} --circ {self.circ} --debounce {self.debounce} --debug")
+            print(f"[GPIO]")
+            print(f"[GPIO] OR add user to gpio group and reboot:")
+            print(f"[GPIO]   sudo usermod -a -G gpio $USER && sudo reboot")
+            print(f"[GPIO]")
+            print(f"[GPIO] ⚠️  CONTINUING WITHOUT GPIO - Sensor will not work!")
+            self.use_gpio = False
         except Exception as e:
-            print("[GPIO] setup failed:", e)
+            error_msg = str(e).lower()
+            if "failed to add edge detection" in error_msg:
+                print(f"[GPIO] ❌ EDGE DETECTION FAILED: GPIO pin {self.gpio_pin} access denied")
+                print(f"[GPIO] Root cause: Insufficient permissions to access GPIO hardware")
+                print(f"[GPIO]")
+                print(f"[GPIO] 🔧 SOLUTION 1 (Immediate): Run with sudo:")
+                print(f"[GPIO]   sudo myenv/bin/python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin {self.gpio_pin} --circ {self.circ} --debounce {self.debounce} --debug")
+                print(f"[GPIO]")
+                print(f"[GPIO] 🔧 SOLUTION 2 (Permanent): Add user to gpio group:")
+                print(f"[GPIO]   sudo usermod -a -G gpio $USER")
+                print(f"[GPIO]   sudo reboot")
+                print(f"[GPIO]   # Then run without sudo")
+            elif "resource busy" in error_msg or "device or resource busy" in error_msg:
+                print(f"[GPIO] ❌ PIN BUSY: GPIO pin {self.gpio_pin} is already in use by another process")
+                print(f"[GPIO] SOLUTION: Try a different pin or restart the Raspberry Pi")
+            else:
+                print(f"[GPIO] ❌ SETUP FAILED: {e}")
+                print(f"[GPIO] Check your wiring and GPIO pin {self.gpio_pin} connection")
+            print(f"")
+            print(f"[GPIO] ⚠️  CONTINUING WITHOUT GPIO - System will show demo data only!")
+            print(f"[GPIO] Real sensor functionality requires GPIO access")
             self.use_gpio = False
 
     def _gpio_cb(self, ch):
@@ -194,6 +228,27 @@ class DriveBackend:
                     print(f"[DEBUG] GPIO callback - Pin {ch} went HIGH, sensor idle")
             
             self.last_gpio_state = current_state
+
+    def _test_gpio_connection(self):
+        """Test GPIO pin connectivity and provide diagnostic information"""
+        try:
+            current_state = GPIO.input(self.gpio_pin)
+            state_text = "HIGH (3.3V)" if current_state else "LOW (0V)"
+            
+            print(f"[GPIO-TEST] Pin {self.gpio_pin} reading: {state_text}")
+            print(f"[GPIO-TEST] Expected for NPN sensor: HIGH when idle, LOW when detecting")
+            
+            # Check if pin is floating (should be HIGH with pull-up)
+            if current_state:
+                print(f"[GPIO-TEST] ✅ Pull-up resistor working - pin is HIGH when idle")
+            else:
+                print(f"[GPIO-TEST] ⚠️  Pin is LOW - sensor may be detecting or wiring issue")
+                
+            print(f"[GPIO-TEST] Connect NPN sensor: Red->12V, Black->GND, Green->GPIO{self.gpio_pin}")
+            print(f"[GPIO-TEST] Test by triggering sensor - should see pulse messages")
+                
+        except Exception as e:
+            print(f"[GPIO-TEST] Failed to read pin {self.gpio_pin}: {e}")
 
     def interp_profile(self, t):
         if t <= self.times[0]:
@@ -585,9 +640,26 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
         print(f"   Press Ctrl+C to stop")
         print(f"")
     else:
-        print("[ERROR] GPIO REQUIRED! This system requires NPN sensor input.")
-        print("[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug")
-        sys.exit(1)
+        print("")
+        print("⚠️  GPIO SETUP FAILED - SENSOR FUNCTIONALITY LIMITED!")
+        print("")
+        print("🔧 TO ENABLE NPN SENSOR:")
+        print("   1. Make sure you're running on a Raspberry Pi")
+        print("   2. Use sudo for GPIO access:")
+        print(f"      sudo myenv/bin/python3 backend.py --profile drive_cycles.csv --rebase --use-gpio --gpio-pin {args.gpio_pin} --circ {args.circ} --debounce {args.debounce} --debug")
+        print("")
+        print("🔌 NPN SENSOR WIRING (3-wire):")
+        print("   Red wire    -> 12V power supply")
+        print("   Black wire  -> GND (ground)")
+        print(f"   Green wire  -> GPIO{args.gpio_pin} (BCM numbering)")
+        print("")
+        print("⚙️  OR add user to gpio group (no sudo needed):")
+        print("   sudo usermod -a -G gpio $USER && sudo reboot")
+        print("")
+        print("🚀 CONTINUING IN DEMO MODE (no real sensor data)...")
+        print("")
+        # Don't exit - continue running for demonstration/testing
+        # sys.exit(1)
     
     loop = asyncio.get_running_loop()
     loop.create_task(backend.run_loop())
