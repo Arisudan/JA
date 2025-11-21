@@ -9,94 +9,102 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/1.4.0/chartjs-plugin-annotation.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
-        /* Prevent scrolling on touch screens */
-        body { background: #061018; color: #dfe9f3; font-family: Arial, sans-serif; overflow: hidden; touch-action: none; }
+        body { background: #061018; color: #dfe9f3; font-family: sans-serif; overflow: hidden; height: 100vh; width: 100vw; margin: 0; padding: 4px; }
         
-        /* Card styling */
-        .card { background: #0c1620; border-radius: 8px; border: 1px solid #1f2937; }
+        /* 1024x600 Grid Layout */
+        .main-grid {
+            display: grid;
+            grid-template-rows: 40px 110px 1fr 50px; /* Header, Stats, Chart, Controls */
+            gap: 8px;
+            height: 100%;
+        }
+
+        .card { background: #0c1620; border-radius: 6px; border: 1px solid #1f2937; position: relative; }
         
-        /* Animations */
+        .btn { font-weight: bold; border-radius: 4px; transition: 0.1s; font-size: 14px; height: 100%; }
+        .btn:active { transform: scale(0.98); }
+        
+        /* Sensor Animation */
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .status-active { color: #4ade80; animation: pulse 1s infinite; }
-        
-        /* Compact Button */
-        .btn-compact { padding: 8px 16px; font-weight: bold; border-radius: 4px; transition: 0.2s; }
-        .btn-compact:active { transform: scale(0.95); }
     </style>
 </head>
-<body class="h-screen w-screen flex flex-col p-2 gap-2">
+<body>
 
-    <!-- TOP ROW: Header + Sensor Status (10% Height) -->
-    <div class="flex justify-between items-center px-2">
-        <div class="flex items-center gap-2">
-            <div id="wsDot" class="w-3 h-3 rounded-full bg-red-500"></div>
-            <h1 class="text-lg font-bold text-white tracking-wider">HERO DRIVE CYCLE</h1>
-        </div>
+    <div class="main-grid">
         
-        <!-- Sensor Status Box -->
-        <div class="flex items-center gap-4 bg-gray-800 px-3 py-1 rounded border border-gray-700">
-            <div class="text-right">
-                <div class="text-[10px] text-gray-400">SENSOR</div>
-                <div id="sensorText" class="text-xs font-bold text-gray-500">IDLE</div>
+        <!-- ROW 1: Header (40px) -->
+        <div class="flex justify-between items-center px-4">
+            <div class="flex items-center gap-2">
+                <div id="wsDot" class="w-3 h-3 rounded-full bg-red-500"></div>
+                <h1 class="text-md font-bold text-white tracking-wider">HERO DRIVE CYCLE</h1>
             </div>
-            <div class="w-px h-6 bg-gray-600"></div>
-            <div class="text-right">
-                <div class="text-[10px] text-gray-400">PIN 17</div>
-                <div id="pinText" class="text-xs font-mono text-gray-500">HIGH</div>
+            <!-- Sensor Status -->
+            <div class="flex items-center gap-4 bg-gray-800 px-2 rounded border border-gray-700 h-8">
+                <div class="text-[10px] text-gray-400">SENSOR: <span id="sensorText" class="font-bold text-gray-500">IDLE</span></div>
+                <div class="w-px h-4 bg-gray-600"></div>
+                <div class="text-[10px] text-gray-400">PIN 17: <span id="pinText" class="font-mono text-gray-500">HIGH</span></div>
             </div>
         </div>
-    </div>
 
-    <!-- MIDDLE ROW: Big Stats (25% Height) -->
-    <div class="grid grid-cols-4 gap-2 h-1/4">
-        <!-- Actual Speed -->
-        <div class="card flex flex-col justify-center items-center relative overflow-hidden">
-            <div class="text-[10px] text-gray-400 absolute top-2 left-2">ACTUAL</div>
-            <div id="actual" class="text-5xl font-black text-green-400">0.0</div>
-            <div class="text-xs text-gray-500">km/h</div>
+        <!-- ROW 2: Stats (110px) -->
+        <div class="grid grid-cols-4 gap-2">
+            <!-- Actual Speed -->
+            <div class="card flex flex-col justify-center items-center">
+                <div class="text-[10px] text-gray-400 absolute top-1 left-2">ACTUAL</div>
+                <div id="actual" class="text-6xl font-black text-green-400 leading-none">0.0</div>
+                <div class="text-[10px] text-gray-500">km/h</div>
+            </div>
+            <!-- Target Speed -->
+            <div class="card flex flex-col justify-center items-center">
+                <div class="text-[10px] text-gray-400 absolute top-1 left-2">TARGET</div>
+                <div id="target" class="text-6xl font-black text-white leading-none">0.0</div>
+                <div class="text-[10px] text-gray-500">km/h</div>
+            </div>
+            <!-- Timer -->
+            <div class="card flex flex-col justify-center items-center">
+                <div class="text-[10px] text-gray-400">TIME</div>
+                <div id="time" class="text-4xl font-bold text-blue-400">0.0</div>
+                <div class="text-[10px] text-gray-500">sec</div>
+            </div>
+            <!-- Violations -->
+            <div class="card flex flex-col justify-center items-center bg-red-900/10 border-red-900/30">
+                <div class="text-[10px] text-red-400">VIOLATIONS</div>
+                <div id="viol" class="text-5xl font-bold text-red-500">0</div>
+            </div>
         </div>
-        
-        <!-- Target Speed -->
-        <div class="card flex flex-col justify-center items-center relative">
-            <div class="text-[10px] text-gray-400 absolute top-2 left-2">TARGET</div>
-            <div id="target" class="text-5xl font-black text-white">0.0</div>
-            <div class="text-xs text-gray-500">km/h</div>
-        </div>
-        
-        <!-- Timer -->
-        <div class="card flex flex-col justify-center items-center">
-            <div class="text-[10px] text-gray-400">TIME</div>
-            <div id="time" class="text-3xl font-bold text-blue-400">0.0</div>
-            <div class="text-[10px] text-gray-500">sec</div>
-        </div>
-        
-        <!-- Violations -->
-        <div class="card flex flex-col justify-center items-center bg-red-900/10 border-red-900/30">
-            <div class="text-[10px] text-red-400">VIOLATIONS</div>
-            <div id="viol" class="text-4xl font-bold text-red-500">0</div>
-        </div>
-    </div>
 
-    <!-- BOTTOM ROW: Chart (Flexible Height - Fills rest of screen) -->
-    <div class="card flex-1 relative p-1 min-h-0">
-        <canvas id="chart"></canvas>
-    </div>
+        <!-- ROW 3: Chart (Fills Remaining Space) -->
+        <div class="card p-1 relative min-h-0">
+            <canvas id="chart"></canvas>
+        </div>
 
-    <!-- FOOTER: Controls (10% Height) -->
-    <div class="flex gap-2 h-[10%] min-h-[40px]">
-        <button id="startBtn" class="btn-compact bg-green-600 text-white flex-1 text-lg">START</button>
-        <button id="stopBtn" class="btn-compact bg-yellow-600 text-white flex-1 text-lg">STOP</button>
-        <button id="resetBtn" class="btn-compact bg-gray-600 text-white w-24">RESET</button>
-        <button id="dlBtn" class="btn-compact bg-blue-600 text-white w-32 flex items-center justify-center gap-2">
-            <span>📥</span> EXCEL
-        </button>
+        <!-- ROW 4: Controls (50px) -->
+        <div class="flex gap-2">
+            <button id="startBtn" class="btn bg-green-600 text-white flex-1 text-lg">START TEST</button>
+            <button id="stopBtn" class="btn bg-yellow-600 text-white w-32">STOP</button>
+            <button id="resetBtn" class="btn bg-gray-600 text-white w-24">RESET</button>
+            
+            <!-- Simple Dropdown for Export -->
+            <div class="relative h-full">
+                <button id="dlBtn" class="btn bg-blue-600 text-white w-32 flex items-center justify-center gap-2">
+                    <span>📥</span> EXCEL
+                </button>
+                <div id="dlMenu" class="hidden absolute bottom-full right-0 mb-2 w-40 bg-gray-800 border border-gray-600 rounded shadow-xl z-50">
+                    <button id="toExcel" class="block w-full text-left px-4 py-3 text-white hover:bg-gray-700">📊 Excel (.xlsx)</button>
+                    <button id="toCsv" class="block w-full text-left px-4 py-3 text-white hover:bg-gray-700">📄 CSV (.csv)</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
 <script>
     const WS_URL = "ws://localhost:8765";
     let ws, chart;
     let driveData = [], actualData = [], singlePoint = [], violationMarkers = [];
-    let windowSeconds = 20; // How much time to show on graph
+    let windowSeconds = 20;
+    let pendingDlType = null;
 
     // UI References
     const ui = {
@@ -107,7 +115,7 @@
         wsDot: document.getElementById('wsDot'),
         sen: document.getElementById('sensorText'),
         pin: document.getElementById('pinText'),
-        start: document.getElementById('startBtn')
+        dlMenu: document.getElementById('dlMenu')
     };
 
     function initChart(targets) {
@@ -167,10 +175,11 @@
             } else if (m.type === "violation") {
                 if(chart) { violationMarkers.push({x: m.time, y: m.actual}); chart.update('none'); }
             } else if (m.type === "csv_download") {
-                downloadExcel(m.content, m.meta);
+                if (pendingDlType === 'excel') dlExcel(m.content, m.meta);
+                else dlCsv(m.content, m.meta);
             } else if (m.type === "sensor_status") {
                 ui.sen.innerText = m.sensor_active ? "ACTIVE" : "IDLE";
-                ui.sen.className = m.sensor_active ? "text-xs font-bold text-green-400 status-active" : "text-xs font-bold text-gray-500";
+                ui.sen.className = m.sensor_active ? "font-bold text-green-400 status-active" : "font-bold text-gray-500";
                 ui.pin.innerText = `PIN ${m.gpio_pin}: ${m.gpio_level}`;
             } else if (m.type === "reset") {
                 resetDisplay();
@@ -197,7 +206,6 @@
                 actualData[idx] = d.actual;
                 singlePoint.fill(null); singlePoint[idx] = d.actual;
                 
-                // Smart Scrolling
                 let minX = Math.max(0, d.time - (windowSeconds * 0.8));
                 chart.options.scales.x.min = minX;
                 chart.options.scales.x.max = minX + windowSeconds;
@@ -207,11 +215,11 @@
         }
         
         if(d.running) {
-            ui.start.innerText = "PAUSE";
-            ui.start.className = "btn-compact bg-yellow-600 text-white flex-1 text-lg";
+            document.getElementById('startBtn').innerText = "PAUSE";
+            document.getElementById('startBtn').className = "btn bg-yellow-600 text-white flex-1 text-lg";
         } else {
-            ui.start.innerText = "START";
-            ui.start.className = "btn-compact bg-green-600 text-white flex-1 text-lg";
+            document.getElementById('startBtn').innerText = "START TEST";
+            document.getElementById('startBtn').className = "btn bg-green-600 text-white flex-1 text-lg";
         }
     }
 
@@ -224,7 +232,13 @@
         ui.act.innerText = "0.0"; ui.tm.innerText = "0.0"; ui.vio.innerText = "0";
     }
 
-    function downloadExcel(csv, meta) {
+    function reqDl(type) {
+        pendingDlType = type;
+        ws.send(JSON.stringify({cmd: "download_log"}));
+        document.getElementById('dlMenu').classList.add('hidden');
+    }
+
+    function dlExcel(csv, meta) {
         if(!csv) return alert("No data");
         const rows = csv.trim().split('\n').map(r => r.split(','));
         const final = [["Hero Drive Cycle Report"], ["Start:", meta.start], ["End:", meta.end], [], ...rows];
@@ -234,11 +248,23 @@
         XLSX.writeFile(wb, `Run_${Date.now()}.xlsx`);
     }
 
+    function dlCsv(csv, meta) {
+        if(!csv) return alert("No data");
+        const blob = new Blob([`# Start: ${meta.start}\n# End: ${meta.end}\n${csv}`], {type: 'text/csv'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `Run_${Date.now()}.csv`;
+        a.click();
+    }
+
     // --- EVENTS ---
     document.getElementById('startBtn').onclick = () => ws.send(JSON.stringify({cmd: "start"}));
     document.getElementById('stopBtn').onclick = () => ws.send(JSON.stringify({cmd: "stop"}));
     document.getElementById('resetBtn').onclick = () => ws.send(JSON.stringify({cmd: "reset"}));
-    document.getElementById('dlBtn').onclick = () => ws.send(JSON.stringify({cmd: "download_log"}));
+    document.getElementById('dlBtn').onclick = (e) => { e.stopPropagation(); document.getElementById('dlMenu').classList.toggle('hidden'); };
+    window.onclick = () => document.getElementById('dlMenu').classList.add('hidden');
+    document.getElementById('toExcel').onclick = () => reqDl('excel');
+    document.getElementById('toCsv').onclick = () => reqDl('csv');
 
     connect();
 </script>
