@@ -99,9 +99,8 @@ class DriveBackend:
         self.last_violation_check = None
         self.cmvr_threshold = 0.20  # 200ms sustained violation required
 
-        # speed source
-        self.mode = "manual"
-        self.manual_speed = 0.0
+        # speed source - SENSOR ONLY MODE
+        self.mode = "real"  # Always use real sensor mode
         self.actual_speed = 0.0
 
         # pulse counting for real sensor mode
@@ -233,11 +232,11 @@ class DriveBackend:
             if not self.running:
                 self.running = True
                 self.start_monotonic = time.monotonic() - self.elapsed
-                # initialize prev_inside based on current actual vs band (use manual or sensor)
-                if (self.mode == "manual") or (not self.use_gpio):
-                    now_actual = float(self.manual_speed)
-                else:
+                # initialize prev_inside based on current sensor speed
+                if self.use_gpio:
                     now_actual = self.compute_speed()
+                else:
+                    now_actual = 0.0  # No sensor available
                 self.actual_speed = now_actual
                 target, upper, lower = self.interp_profile(self.elapsed)
                 self.prev_inside = (self.actual_speed >= lower and self.actual_speed <= upper)
@@ -269,43 +268,26 @@ class DriveBackend:
             await self.broadcast({"type":"reset"})
             if self.debug:
                 print("[CMD] reset - CMVR/AIS timers cleared")
-        elif cmd == "set_mode":
-            m = obj.get("mode")
-            if m in ("manual","real"):
-                prev_mode = self.mode
-                self.mode = m
+        elif cmd == "sensor_status":
+            # Send current sensor status to frontend
+            if self.use_gpio:
+                current_sensor_state = "DETECTING" if hasattr(self, 'gpio_active') and self.gpio_active else "IDLE"
+                gpio_level = "HIGH" if getattr(self, 'last_gpio_state', True) else "LOW"
+                pulses_recent = self.pulse_counter.count_recent(1.0)
                 
-                if self.debug: 
-                    if m == "real" and self.use_gpio:
-                        current_sensor_state = "DETECTING" if hasattr(self, 'gpio_active') and self.gpio_active else "IDLE"
-                        print(f"[CMD] Mode switched to REAL NPN sensor (GPIO pin {self.gpio_pin}) - Manual controls disabled")
-                        print(f"[CMD] Current sensor state: {current_sensor_state}")
-                        if hasattr(self, 'last_gpio_state'):
-                            gpio_level = "HIGH" if self.last_gpio_state else "LOW"
-                            print(f"[CMD] GPIO level: {gpio_level}")
-                    elif m == "real" and not self.use_gpio:
-                        print(f"[CMD] Mode set to REAL but GPIO not enabled! Use --use-gpio flag to enable NPN sensor input")
-                    else:
-                        print(f"[CMD] Mode switched to MANUAL - NPN sensor input disabled")
-                
-                # Reset speed calculation when switching modes
-                if hasattr(self, '_prev_computed_speed'):
-                    del self._prev_computed_speed
-                        
-                # Send mode confirmation back to frontend
-                mode_msg = {
-                    "type": "mode_status",
-                    "mode": m,
-                    "gpio_enabled": self.use_gpio,
-                    "gpio_pin": self.gpio_pin if self.use_gpio else None,
-                    "sensor_type": "NPN Proximity" if self.use_gpio else None
+                status_msg = {
+                    "type": "sensor_status",
+                    "sensor_active": getattr(self, 'gpio_active', False),
+                    "gpio_level": gpio_level,
+                    "pulses_per_second": pulses_recent,
+                    "current_speed": round(self.actual_speed, 2),
+                    "gpio_pin": self.gpio_pin,
+                    "sensor_type": "NPN Proximity"
                 }
-                await self.broadcast(mode_msg)
-        elif cmd == "manual_speed":
-            try:
-                self.manual_speed = float(obj.get("speed", 0.0))
-            except Exception:
-                pass
+                await self.broadcast(status_msg)
+                
+                if self.debug:
+                    print(f"[SENSOR-STATUS] State: {current_sensor_state}, GPIO: {gpio_level}, PPS: {pulses_recent}, Speed: {self.actual_speed:.1f} km/h")
 
     # logging
     def _open_log(self):
@@ -390,18 +372,9 @@ class DriveBackend:
                 self.elapsed = time.monotonic() - (self.start_monotonic or time.monotonic())
                 if self.elapsed < 0: self.elapsed = 0.0
 
-                # pick speed based on current mode
-                if self.mode == "manual":
-                    # Manual mode: always use manual_speed regardless of GPIO availability
-                    self.actual_speed = float(self.manual_speed)
-                    if self.debug:
-                        # Only log manual speed changes occasionally to avoid spam
-                        if not hasattr(self, '_last_manual_log') or time.monotonic() - self._last_manual_log > 2.0:
-                            self._last_manual_log = time.monotonic()
-                            print(f"[MANUAL] Using manual speed: {self.actual_speed:.1f} km/h")
-                            
-                elif self.mode == "real" and self.use_gpio:
-                    # Real NPN sensor mode with GPIO enabled - compute speed from sensor pulses
+                # SENSOR-ONLY MODE: Always use real NPN sensor input
+                if self.use_gpio:
+                    # Real NPN sensor mode - compute speed from GPIO pin 17 pulses
                     prev_speed = getattr(self, '_prev_sensor_speed', 0.0)
                     self.actual_speed = self.compute_speed()
                     self._prev_sensor_speed = self.actual_speed
@@ -412,20 +385,20 @@ class DriveBackend:
                             sensor_status = "ACTIVE" if hasattr(self, 'gpio_active') and self.gpio_active else "IDLE"
                             print(f"[NPN-SENSOR] Real-time speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f}) - Sensor: {sensor_status}")
                         
-                        # Periodic sensor status (every 5 seconds when not changing)
-                        if not hasattr(self, '_last_sensor_log') or time.monotonic() - self._last_sensor_log > 5.0:
+                        # Periodic sensor status (every 3 seconds for real-time monitoring)
+                        if not hasattr(self, '_last_sensor_log') or time.monotonic() - self._last_sensor_log > 3.0:
                             self._last_sensor_log = time.monotonic()
                             pulses_recent = self.pulse_counter.count_recent(1.0)
                             gpio_level = "HIGH" if getattr(self, 'last_gpio_state', True) else "LOW"
-                            print(f"[NPN-SENSOR] Status: {pulses_recent} pulses/sec, GPIO: {gpio_level}, Speed: {self.actual_speed:.1f} km/h")
+                            print(f"[NPN-SENSOR] Pin17 Status: {pulses_recent} pulses/sec, GPIO: {gpio_level}, Speed: {self.actual_speed:.1f} km/h")
                         
                 else:
-                    # Real mode requested but GPIO not available - fallback to manual
-                    self.actual_speed = float(self.manual_speed)
+                    # GPIO not available - show error and use zero speed
+                    self.actual_speed = 0.0
                     if self.debug:
-                        if not hasattr(self, '_last_fallback_log') or time.monotonic() - self._last_fallback_log > 5.0:
-                            self._last_fallback_log = time.monotonic()
-                            print(f"[FALLBACK] Real mode requested but NPN sensor unavailable - using manual speed: {self.actual_speed:.1f} km/h")
+                        if not hasattr(self, '_last_error_log') or time.monotonic() - self._last_error_log > 10.0:
+                            self._last_error_log = time.monotonic()
+                            print(f"[ERROR] GPIO not enabled! NPN sensor required. Use --use-gpio flag and run with sudo on Raspberry Pi")
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
@@ -540,10 +513,13 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
     print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={gpio_status}{gpio_pin_info}")
     
     if backend.use_gpio:
-        print(f"[GPIO] Real sensor mode ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
+        print(f"[GPIO] NPN SENSOR MODE ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
         print(f"[GPIO] Wheel circumference: {backend.circ}m, Pulses per revolution: {backend.ppr}")
+        print(f"[GPIO] Sensor wiring: Red->12V, Black->GND, Green->GPIO{backend.gpio_pin}")
     else:
-        print("[GPIO] Manual mode only - use --use-gpio to enable real sensor input")
+        print("[ERROR] GPIO REQUIRED! This system requires NPN sensor input.")
+        print("[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug")
+        sys.exit(1)
     
     loop = asyncio.get_running_loop()
     loop.create_task(backend.run_loop())
