@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-backend.py - Fixed for Websockets v14+ (Removed 'path' argument)
+backend.py - Fixed for Websockets v14+, Sensor Status, and Download
 """
 import asyncio
 import websockets
@@ -176,7 +176,7 @@ def get_targets(t):
             return (p1['target'] + (p2['target']-p1['target'])*r), (p1['upper'] + (p2['upper']-p1['upper'])*r), (p1['lower'] + (p2['lower']-p1['lower'])*r)
     return 0,0,0
 
-# --- FIXED HANDLER (Removed 'path' argument) ---
+# --- HANDLER ---
 async def handler(ws):
     clients.add(ws)
     try:
@@ -204,6 +204,16 @@ async def handler(ws):
                 test_state['manual_speed'] = float(m.get('speed', 0))
             elif cmd == 'download_log':
                 await ws.send(json.dumps({"type": "csv_download", "content": last_log_content}))
+            elif cmd == 'sensor_status':
+                # Respond to UI sensor status request
+                active = get_current_speed() > 0.1
+                await ws.send(json.dumps({
+                    "type": "sensor_status",
+                    "sensor_active": active,
+                    "gpio_pin": HALL_SENSOR_PIN,
+                    "gpio_level": "LOW" if active else "HIGH",
+                    "current_speed": f"{get_current_speed():.1f}"
+                }))
                 
     except: pass
     finally: clients.remove(ws)
@@ -258,7 +268,7 @@ async def main():
     print(f"Server running on ws://0.0.0.0:{PORT}")
     
     asyncio.create_task(loop())
-    async with websockets.serve(handler, "0.0.0.0", PORT) as server:
+    async with websockets.serve(handler, "0.0.0.0", PORT):
         await asyncio.Future()
 
 if __name__ == "__main__":
