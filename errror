@@ -1,26 +1,11 @@
-(myenv) psg@raspberrypi:~/project1 $ python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
+(myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
+[GPIO] RPi.GPIO not available - Running in simulation mode (Windows/Linux without GPIO)
 [MAIN] backend starting with profile: drive_cycle.csv
 [MAIN] rebased by 0s -> new start 0s
-[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=off
-[BACKEND] loop 5Hz profile_end=267.0s GPIO=off debounce=0.0s min_speed=1.0
+[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=OFF
+[GPIO] Manual mode only - use --use-gpio to enable real sensor input
+[BACKEND] loop 10Hz profile_end=1379.0s GPIO=off debounce=0.05s
 [WS] profile + snapshot sent
 [WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[WS] profile + snapshot sent
-[CMD] start (elapsed) 0.0
-/home/psg/project1/backend.py:257: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
-  ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
-[LOG] opened test_20251120T062157Z.csv
-[VIOL] ignored tiny lower crossing at 0.10s actual=0.00 <= min_speed 1.0
-/home/psg/project1/backend.py:273: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
-  self.csv_writer.writerow([datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
+[CMD] Mode set to REAL but GPIO not enabled! Use --use-gpio flag to enable NPN sensor input
 
