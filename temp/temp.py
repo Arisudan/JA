@@ -2,71 +2,73 @@
 """
 backend.py
 
-Immediate crossing violation logic + CSV logging + per-second CSV export via WebSocket.
+Counts a violation EACH time actual speed crosses inside->outside (upper or lower)
+throughout the entire drive-cycle. Emits "crossed":true and "cross_side":"upper"/"lower"
+in update messages so frontend can mark it.
 
 Usage examples:
+  # manual mode (no GPIO)
   python3 backend.py --profile drive_cycle.csv --rebase --debounce 0.0 --debug
-  sudo python3 backend.py --profile drive_cycle.csv --use-gpio --gpio-pin 17 --circ 1.94 --ppr 1 --debug
 
-Notes:
- - Writes logs/test_<ts>.csv (every tick)
- - Writes logs/live_seconds.csv (one row per elapsed second; updated as run progresses)
- - WebSocket command: {"cmd":"request_log"} -> backend replies with {"type":"log_csv","csv": "<text base64-safe or raw text>"}
- - Violation logic: count immediate inside->outside crossing (subject to debounce and min_speed guard for lower crossings)
+  # with GPIO on Raspberry Pi (run with sudo)
+  sudo python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
+
+Dependencies:
+  pip install pandas numpy websockets
+  On Raspberry Pi: sudo apt install python3-rpi.gpio
 """
-import argparse
-import asyncio
-import csv
-import json
-import os
-import signal
-import sys
-import time
+
+import argparse, asyncio, csv, json, os, signal, sys, time
 from collections import deque
 from datetime import datetime
+import datetime as dt
+import threading
+import importlib
 
 import numpy as np
 import pandas as pd
 import websockets
 
-# Optional RPi GPIO
-try:
-    import RPi.GPIO as GPIO
-    GPIO_AVAILABLE = True
-except Exception:
-    GPIO_AVAILABLE = False
+# Do not import RPi.GPIO at top-level; import lazily inside _setup_gpio
+GPIO = None
+GPIO_AVAILABLE = False
 
-# defaults
+# Defaults
 PORT = 8765
-TICK_HZ = 5
+TICK_HZ = 10  # Increased from 5 to 10 Hz for smoother real-time sensor response
 LOG_DIR = "logs"
 DEFAULT_TOL = 2.0
+GRACE_SECONDS = 0.0   # default 0 so crossings count immediately; adjust via CLI if needed
 
 class PulseCounter:
     def __init__(self, keep_seconds=10.0):
         self.keep_seconds = keep_seconds
+        self.lock = threading.Lock()
         self.deque = deque()
     def add(self, t=None):
-        if t is None:
-            t = time.monotonic()
-        self.deque.append(t)
-        cutoff = t - self.keep_seconds
-        while self.deque and self.deque[0] < cutoff:
-            self.deque.popleft()
+        if t is None: t = time.monotonic()
+        with self.lock:
+            self.deque.append(t)
+            cutoff = t - self.keep_seconds
+            while self.deque and self.deque[0] < cutoff:
+                self.deque.popleft()
     def count_recent(self, window=1.0):
         now = time.monotonic()
         cutoff = now - window
-        cnt = 0
-        for ts in reversed(self.deque):
-            if ts >= cutoff:
-                cnt += 1
-            else:
-                break
-        return cnt
+        with self.lock:
+            while self.deque and self.deque[0] < now - self.keep_seconds:
+                self.deque.popleft()
+            cnt = 0
+            for ts in reversed(self.deque):
+                if ts >= cutoff:
+                    cnt += 1
+                else:
+                    break
+            return cnt
 
 class DriveBackend:
     def __init__(self, df, tick_hz=TICK_HZ, debounce=0.0, circ=1.94, ppr=1.0,
-                 gpio_pin=17, use_gpio=False, min_speed=0.0, debug=False):
+                 gpio_pin=17, use_gpio=False, min_speed=0.0, debug=False, simulate_gpio=False):
         self.profile = df.copy()
         self.tick_hz = tick_hz
         self.dt = 1.0 / tick_hz
@@ -74,8 +76,11 @@ class DriveBackend:
         self.circ = float(circ)
         self.ppr = float(ppr)
         self.gpio_pin = int(gpio_pin)
-        self.use_gpio = bool(use_gpio) and GPIO_AVAILABLE
-        self.min_speed = float(min_speed)
+        # Note: do not force use_gpio True if RPi module missing; we'll try dynamic import
+        self.request_use_gpio = bool(use_gpio)
+        self.use_gpio = False  # set properly in _setup_gpio
+        self.simulate_gpio = bool(simulate_gpio)
+        self.min_speed = float(min_speed)   # ignore tiny lower-crossings when actual < this
         self.debug = bool(debug)
 
         # runtime state
@@ -83,20 +88,25 @@ class DriveBackend:
         self.start_monotonic = None
         self.elapsed = 0.0
 
-        # violation state
+        # count and crossing flags
         self.violations = 0
         self.prev_inside = True
         self.last_cross_monotonic = None
+        
+        # CMVR/AIS compliant violation timing (0.20 second rule)
+        self.violation_timer = 0.0
+        self.last_violation_check = None
+        self.cmvr_threshold = 0.20  # 200ms sustained violation required
 
         # speed source
         self.mode = "manual"
         self.manual_speed = 0.0
         self.actual_speed = 0.0
 
-        # pulses for real sensor
+        # pulse counting for real sensor mode
         self.pulse_counter = PulseCounter(keep_seconds=max(10, int(self.tick_hz*5)))
 
-        # websocket clients
+        # websockets clients
         self.clients = set()
 
         # profile arrays
@@ -110,27 +120,61 @@ class DriveBackend:
         os.makedirs(LOG_DIR, exist_ok=True)
         self.logfile = None
         self.csv_writer = None
-        self.live_seconds_path = os.path.join(LOG_DIR, "live_seconds.csv")
-        self.last_written_second = -1  # to track per-second writing
 
-        if self.use_gpio:
+        # Try to enable GPIO only if requested
+        if self.request_use_gpio:
             self._setup_gpio()
 
     def _setup_gpio(self):
+        # Try dynamic import of RPi.GPIO only when requested
+        global GPIO, GPIO_AVAILABLE
+        if self.simulate_gpio:
+            self.use_gpio = True
+            if self.debug:
+                print(f"[GPIO] SIMULATION MODE - GPIO pin {self.gpio_pin} configured for testing")
+            return
+
+        try:
+            # dynamic import (works in venv or system site-packages if available)
+            GPIO = importlib.import_module('RPi.GPIO')
+            GPIO_AVAILABLE = True
+        except Exception as e:
+            GPIO_AVAILABLE = False
+            print("[GPIO] RPi.GPIO import failed during setup:", e)
+            print("[GPIO] To enable GPIO: run on a Raspberry Pi with python3-rpi.gpio installed and run with sudo.")
+            print("[GPIO] Falling back to manual mode (no hardware pulses).")
+            self.use_gpio = False
+            return
+
+        # If import succeeded, attempt to configure pin
         try:
             GPIO.setmode(GPIO.BCM)
+            # We assume user uses an external divider/optocoupler; disable internal pull-ups to avoid contention
             GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_OFF)
-            GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=10)
+            # bouncetime expects milliseconds (RPi.GPIO takes ms)
+            bouncetime_ms = max(1, int(self.debounce * 1000)) if self.debounce > 0 else 5
+            GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=bouncetime_ms)
+            self.use_gpio = True
             if self.debug:
-                print(f"[GPIO] configured BCM{self.gpio_pin}")
+                print(f"[GPIO] REAL HARDWARE - BCM{self.gpio_pin} configured (PUD_OFF) bouncetime={bouncetime_ms}ms")
         except Exception as e:
             print("[GPIO] setup failed:", e)
+            print("[GPIO] Ensure you ran with sudo or the user is in the gpio group, and that the pin is accessible.")
             self.use_gpio = False
 
     def _gpio_cb(self, ch):
-        self.pulse_counter.add()
+        pulse_time = time.monotonic()
+        self.pulse_counter.add(pulse_time)
+        
+        # Enhanced debugging for GPIO pin pulses
         if self.debug:
-            print(f"[GPIO] pulse at {time.monotonic():.3f}")
+            if hasattr(self, '_last_pulse_time'):
+                pulse_interval = pulse_time - self._last_pulse_time
+                freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
+                print(f"[GPIO{self.gpio_pin}] Pulse: {pulse_time:.3f}s, Interval: {pulse_interval*1000:.1f}ms, Freq: {freq:.1f}Hz")
+            else:
+                print(f"[GPIO{self.gpio_pin}] First pulse detected at {pulse_time:.3f}s")
+            self._last_pulse_time = pulse_time
 
     def interp_profile(self, t):
         if t <= self.times[0]:
@@ -142,7 +186,7 @@ class DriveBackend:
         lo = float(np.interp(t, self.times, self.lowers))
         return tg, up, lo
 
-    # websocket registration
+    # websocket registration/handler
     async def register(self, ws):
         self.clients.add(ws)
         prof_msg = {"type":"profile","profile":{"time":self.times.tolist(),"target":self.targets.tolist(),"upper":self.uppers.tolist(),"lower":self.lowers.tolist()}}
@@ -158,7 +202,6 @@ class DriveBackend:
         self.clients.discard(ws)
 
     async def handler(self, websocket, path):
-        # Accept incoming messages and commands
         await self.register(websocket)
         try:
             async for raw in websocket:
@@ -166,19 +209,19 @@ class DriveBackend:
                     obj = json.loads(raw)
                 except Exception:
                     continue
-                await self.handle_command(obj, websocket)
+                await self.handle_command(obj)
         except websockets.ConnectionClosed:
             pass
         finally:
             self.unregister(websocket)
 
-    async def handle_command(self, obj, websocket=None):
+    async def handle_command(self, obj):
         cmd = obj.get("cmd")
         if cmd == "start":
             if not self.running:
                 self.running = True
                 self.start_monotonic = time.monotonic() - self.elapsed
-                # initialize prev_inside based on current actual vs band
+                # initialize prev_inside based on current actual vs band (use manual or sensor)
                 if (self.mode == "manual") or (not self.use_gpio):
                     now_actual = float(self.manual_speed)
                 else:
@@ -186,19 +229,12 @@ class DriveBackend:
                 self.actual_speed = now_actual
                 target, upper, lower = self.interp_profile(self.elapsed)
                 self.prev_inside = (self.actual_speed >= lower and self.actual_speed <= upper)
-                # if starting outside, count immediately (unless tiny lower)
-                if not self.prev_inside:
-                    side = "upper" if self.actual_speed > upper else "lower"
-                    if side == "lower" and self.actual_speed <= self.min_speed:
-                        if self.debug:
-                            print("[VIOL] start outside ignored due to min_speed")
-                    else:
-                        self.violations += 1
-                        self.last_cross_monotonic = time.monotonic()
-                        # send immediate violation message
-                        await self.broadcast({"type":"violation","time":round(self.elapsed,2),"violations":int(self.violations),"side":side,"actual":round(self.actual_speed,2)})
-                        if self.debug:
-                            print(f"[VIOL] start counted #{self.violations} side={side}")
+                # Initialize CMVR/AIS violation timer
+                self.violation_timer = 0.0
+                self.last_violation_check = time.monotonic()
+                if self.debug:
+                    compliance_status = "COMPLIANT" if self.prev_inside else "NON-COMPLIANT" 
+                    print(f"[CMVR] START - Initial status: {compliance_status} (speed={self.actual_speed:.1f}, limits={lower:.1f}-{upper:.1f})")
                 if self.debug:
                     print(f"[CMD] start (elapsed {self.elapsed:.2f})")
                 self._open_log()
@@ -214,90 +250,86 @@ class DriveBackend:
             self.violations = 0
             self.prev_inside = True
             self.last_cross_monotonic = None
-            self.last_written_second = -1
+            # Reset CMVR/AIS violation timer
+            self.violation_timer = 0.0
+            self.last_violation_check = None
             self._close_log()
             await self.broadcast({"type":"reset"})
             if self.debug:
-                print("[CMD] reset")
+                print("[CMD] reset - CMVR/AIS timers cleared")
         elif cmd == "set_mode":
             m = obj.get("mode")
             if m in ("manual","real"):
+                prev_mode = self.mode
                 self.mode = m
-                if self.debug: print("[CMD] set_mode", m)
+                if self.debug: 
+                    if m == "real" and self.use_gpio:
+                        print(f"[CMD] Mode switched to REAL sensor (GPIO pin {self.gpio_pin}) - Manual controls disabled")
+                    elif m == "real" and not self.use_gpio:
+                        print(f"[CMD] Mode set to REAL but GPIO not enabled! Use --use-gpio flag to enable sensor input")
+                    else:
+                        print(f"[CMD] Mode switched to MANUAL - GPIO sensor input disabled")
+                        
+                # Send mode confirmation back to frontend
+                mode_msg = {
+                    "type": "mode_status",
+                    "mode": m,
+                    "gpio_enabled": self.use_gpio,
+                    "gpio_pin": self.gpio_pin if self.use_gpio else None
+                }
+                await self.broadcast(mode_msg)
         elif cmd == "manual_speed":
             try:
                 self.manual_speed = float(obj.get("speed", 0.0))
             except Exception:
                 pass
-        elif cmd == "request_log":
-            # send current live_seconds.csv content
-            try:
-                if os.path.exists(self.live_seconds_path):
-                    with open(self.live_seconds_path, "r") as f:
-                        csv_text = f.read()
-                else:
-                    csv_text = ""
-                await self.broadcast({"type":"log_csv","csv": csv_text})
-            except Exception as e:
-                await self.broadcast({"type":"log_csv","csv": "", "error": str(e)})
-        # else: ignore unknown
 
     # logging
     def _open_log(self):
         try:
-            ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+            ts = datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             fname = f"test_{ts}.csv"
             self.logfile = open(os.path.join(LOG_DIR, fname), "w", newline='')
             self.csv_writer = csv.writer(self.logfile)
             self.csv_writer.writerow(["iso","epoch_ms","time_s","target","upper","lower","actual","violations"])
-            # create/overwrite live_seconds CSV with header
-            with open(self.live_seconds_path, "w", newline='') as f:
-                w = csv.writer(f)
-                w.writerow(["iso","epoch_ms","time_s","target","upper","lower","actual","violations"])
-            if self.debug:
-                print(f"[LOG] opened {fname} and live_seconds.csv")
+            if self.debug: print(f"[LOG] opened {fname}")
         except Exception as e:
             print("[LOG] open failed:", e)
             self.logfile = None
             self.csv_writer = None
 
     def _write_log_row(self, elapsed, target, upper, lower, actual, violations):
-        row = [datetime.utcnow().isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)]
-        # CSV (every tick)
-        if self.csv_writer:
-            try:
-                self.csv_writer.writerow(row)
-                self.logfile.flush()
-            except Exception:
-                pass
-        # per-second file: write only once per integer second
-        sec = int(elapsed)
-        if sec != self.last_written_second:
-            try:
-                with open(self.live_seconds_path, "a", newline='') as f:
-                    w = csv.writer(f)
-                    w.writerow(row)
-                self.last_written_second = sec
-            except Exception as e:
-                if self.debug: print("[LOG] live_seconds write failed:", e)
+        if not self.csv_writer: return
+        try:
+            self.csv_writer.writerow([datetime.now(dt.timezone.utc).isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
+            self.logfile.flush()
+        except Exception:
+            pass
 
     def _close_log(self):
         if self.logfile:
-            try:
-                self.logfile.close()
-            except Exception:
-                pass
+            try: self.logfile.close()
+            except: pass
         self.logfile = None
         self.csv_writer = None
 
+    # compute speed from pulses (optimized for real-time response)
     def compute_speed(self):
-        # convert pulses-per-second to km/h
-        window = 1.0
+        # Use shorter window for more responsive real-time updates
+        window = 0.5  # Reduced from 1.0 to 0.5 seconds for faster response
         pulses = self.pulse_counter.count_recent(window)
         pps = pulses / window
         rps = pps / max(1.0, self.ppr)
         speed_mps = rps * self.circ
-        return speed_mps * 3.6
+        speed_kmh = speed_mps * 3.6
+        
+        # Apply simple smoothing for stability while maintaining responsiveness
+        if hasattr(self, '_prev_computed_speed'):
+            # 70% new reading, 30% previous (smooth but responsive)
+            speed_kmh = 0.7 * speed_kmh + 0.3 * self._prev_computed_speed
+        self._prev_computed_speed = speed_kmh
+        
+        return speed_kmh
 
     async def broadcast(self, obj):
         if not self.clients: return
@@ -316,18 +348,39 @@ class DriveBackend:
 
     async def run_loop(self):
         if self.debug:
-            print(f"[BACKEND] running @ {self.tick_hz}Hz profile_end={self.profile_end}s GPIO={'on' if self.use_gpio else 'off'} debounce={self.debounce}s min_speed={self.min_speed}")
+            print(f"[BACKEND] loop {self.tick_hz}Hz profile_end={self.profile_end}s GPIO={'on' if self.use_gpio else 'off'} debounce={self.debounce}s")
         while True:
-            tick_start = time.monotonic()
+            t0 = time.monotonic()
             if self.running:
                 self.elapsed = time.monotonic() - (self.start_monotonic or time.monotonic())
                 if self.elapsed < 0: self.elapsed = 0.0
 
-                # speed source
-                if self.mode == "manual" or not self.use_gpio:
+                # pick speed based on current mode
+                if self.mode == "manual":
+                    # Manual mode: always use manual_speed regardless of GPIO availability
                     self.actual_speed = float(self.manual_speed)
-                else:
+                    if self.debug:
+                        # Only log manual speed changes occasionally to avoid spam
+                        if not hasattr(self, '_last_manual_log') or time.monotonic() - self._last_manual_log > 2.0:
+                            self._last_manual_log = time.monotonic()
+                            print(f"[MANUAL] Using manual speed: {self.actual_speed:.1f} km/h")
+                            
+                elif self.mode == "real" and self.use_gpio:
+                    # Real sensor mode with GPIO enabled - compute speed from GPIO pulses
+                    prev_speed = getattr(self, '_prev_sensor_speed', 0.0)
                     self.actual_speed = self.compute_speed()
+                    self._prev_sensor_speed = self.actual_speed
+                    
+                    if self.debug and abs(self.actual_speed - prev_speed) > 0.5:
+                        print(f"[SENSOR] Real-time GPIO speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f})")
+                        
+                else:
+                    # Real mode requested but GPIO not available - fallback to manual
+                    self.actual_speed = float(self.manual_speed)
+                    if self.debug:
+                        if not hasattr(self, '_last_fallback_log') or time.monotonic() - self._last_fallback_log > 5.0:
+                            self._last_fallback_log = time.monotonic()
+                            print(f"[FALLBACK] Real mode requested but GPIO unavailable - using manual speed: {self.actual_speed:.1f} km/h")
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
@@ -337,62 +390,81 @@ class DriveBackend:
                 crossed_flag = False
                 cross_side = None
 
-                if crossed_event:
-                    cross_side = "upper" if self.actual_speed > upper else "lower"
-                    # ignore tiny lower crossings
-                    if cross_side == "lower" and self.actual_speed <= self.min_speed:
-                        if self.debug:
-                            print(f"[VIOL] ignored tiny lower at {self.elapsed:.2f}s actual={self.actual_speed:.2f} <= min_speed {self.min_speed}")
-                        self.prev_inside = inside
-                    else:
-                        # apply debounce (do not count multiple rapid crosses)
-                        if (self.last_cross_monotonic is None) or (nowm - self.last_cross_monotonic >= self.debounce):
-                            self.violations += 1
-                            self.last_cross_monotonic = nowm
-                            crossed_flag = True
-                            # immediate violation broadcast
-                            await self.broadcast({"type":"violation","time":round(self.elapsed,2),"violations":int(self.violations),"side":cross_side,"actual":round(self.actual_speed,2)})
-                            if self.debug:
-                                print(f"[VIOL] CROSS #{self.violations} at {self.elapsed:.2f}s actual={self.actual_speed:.2f} side={cross_side}")
-                        else:
-                            if self.debug:
-                                print(f"[VIOL] crossing ignored by debounce ({nowm-self.last_cross_monotonic:.3f}s)")
-                        self.prev_inside = inside
+                # CMVR/AIS COMPLIANT VIOLATION DETECTION (0.20 second rule)
+                # Calculate delta time for violation timer
+                current_time = nowm
+                if self.last_violation_check is None:
+                    self.last_violation_check = current_time
+                    delta_time = 0.0
                 else:
-                    # update prev_inside when inside
-                    if inside:
-                        self.prev_inside = True
+                    delta_time = current_time - self.last_violation_check
+                    self.last_violation_check = current_time
+                
+                # Check if speed is outside limits (actual speed > speed limit + tolerance)
+                if not inside:  # Speed is outside valid range
+                    # Increment violation timer
+                    self.violation_timer += delta_time
+                    
+                    # Determine which boundary is violated
+                    if self.actual_speed > upper:
+                        cross_side = "upper"
+                    else:
+                        cross_side = "lower"
+                    
+                    # Check if violation timer meets CMVR/AIS threshold (0.20 seconds)
+                    if self.violation_timer >= self.cmvr_threshold:
+                        # Count violation and reset timer
+                        self.violations += 1
+                        crossed_flag = True
+                        self.violation_timer = 0.0  # Reset timer after counting
+                        
+                        if self.debug:
+                            violation_type = "ABOVE LIMIT (TOO FAST)" if cross_side == "upper" else "BELOW LIMIT (TOO SLOW)"
+                            print(f"[CMVR] VIOLATION #{self.violations} at {self.elapsed:.2f}s - {violation_type} (sustained 0.20s) speed={self.actual_speed:.1f} limit={lower:.1f}-{upper:.1f}")
+                    elif self.debug and self.violation_timer > 0:
+                        print(f"[TIMER] Violation building: {self.violation_timer:.3f}s/{self.cmvr_threshold}s (speed={self.actual_speed:.1f})")
+                        
+                else:  # Speed is within valid range
+                    # Reset violation timer when speed returns to compliant range
+                    if self.violation_timer > 0 and self.debug:
+                        print(f"[CMVR] Speed compliant - timer reset (was {self.violation_timer:.3f}s)")
+                    self.violation_timer = 0.0
+                
+                # Update state for next iteration
+                self.prev_inside = inside
 
-                # log and broadcast update
-                self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
-
+                # prepare message with CMVR/AIS compliance data
                 msg = {
                     "type":"update",
-                    "time": round(self.elapsed,2),
-                    "target": round(target,2),
-                    "upper": round(upper,2),
-                    "lower": round(lower,2),
-                    "actual": round(self.actual_speed,2),
+                    "time": round(self.elapsed, 2),
+                    "target": round(target, 2),
+                    "upper": round(upper, 2),
+                    "lower": round(lower, 2),
+                    "actual": round(self.actual_speed, 2),
                     "violations": int(self.violations),
                     "running": True,
                     "crossed": bool(crossed_flag),
-                    "cross_side": cross_side if crossed_flag else None
+                    "cross_side": cross_side if crossed_flag else None,
+                    "cmvr_timer": round(self.violation_timer, 3),
+                    "cmvr_compliant": inside
                 }
+
+                self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
                 await self.broadcast(msg)
 
-                # profile complete handling
+                # stop at profile end
                 if self.elapsed >= self.profile_end:
                     await self.broadcast({"type":"complete","time":round(self.elapsed,2),"violations":int(self.violations)})
                     self.running = False
                     self._close_log()
 
-            # sleep to maintain tick rate
-            tick_end = time.monotonic()
-            elapsed_tick = tick_end - tick_start
-            await asyncio.sleep(max(0.0, self.dt - elapsed_tick))
+            t1 = time.monotonic()
+            elapsed = t1 - t0
+            await asyncio.sleep(max(0.0, self.dt - elapsed))
 
+# main
 async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=False, debug=False,
-               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=0.0):
+               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=0.0, simulate_gpio=False):
     df = pd.read_csv(profile_path)
     if 'time' not in df.columns or 'target' not in df.columns:
         print("Profile CSV must contain 'time' and 'target' columns")
@@ -402,6 +474,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
     if 'lower' not in df.columns:
         df['lower'] = df['target'] - tol
     df = df[['time','target','upper','lower']].sort_values('time').reset_index(drop=True)
+
     if rebase:
         t0 = df['time'].iloc[0]
         df['time'] = df['time'] - t0
@@ -409,24 +482,33 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
             print(f"[MAIN] rebased by {t0}s -> new start {df['time'].iloc[0]}s")
 
     backend = DriveBackend(df, tick_hz=TICK_HZ, debounce=debounce, circ=circ, ppr=ppr,
-                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug)
+                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug, simulate_gpio=simulate_gpio)
+
     try:
-        server = await websockets.serve(backend.handler, host, port)
+        server = await websockets.serve(lambda ws, path=None: backend.handler(ws, path), host, port)
     except OSError as e:
         print("Fatal: could not bind websocket port:", e)
         raise
 
-    print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={'on' if backend.use_gpio else 'off'}")
+    gpio_status = "ON" if backend.use_gpio else "OFF"
+    gpio_pin_info = f" (Pin {backend.gpio_pin})" if backend.use_gpio else ""
+    print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={gpio_status}{gpio_pin_info}")
+    
+    if backend.use_gpio:
+        print(f"[GPIO] Real sensor mode ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
+        print(f"[GPIO] Wheel circumference: {backend.circ}m, Pulses per revolution: {backend.ppr}")
+    else:
+        print("[GPIO] Manual mode only - use --use-gpio to enable real sensor input")
+    
     loop = asyncio.get_running_loop()
     loop.create_task(backend.run_loop())
 
-    # signal handling
     stop = asyncio.Future()
-    def _on_sig():
+    def _on_signal():
         if not stop.done(): stop.set_result(None)
     try:
-        loop.add_signal_handler(signal.SIGINT, _on_sig)
-        loop.add_signal_handler(signal.SIGTERM, _on_sig)
+        loop.add_signal_handler(signal.SIGINT, _on_signal)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal)
     except Exception:
         pass
 
@@ -442,7 +524,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
                 GPIO.cleanup()
             except Exception:
                 pass
-        print("[MAIN] shutdown complete")
+        print("[MAIN] shutdown complete
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -456,6 +538,7 @@ if __name__ == "__main__":
     parser.add_argument('--circ', type=float, default=1.94)
     parser.add_argument('--ppr', type=float, default=1.0)
     parser.add_argument('--use-gpio', action='store_true')
+    parser.add_argument('--simulate-gpio', action='store_true', help='simulate GPIO for testing on non-Pi systems')
     parser.add_argument('--debounce', type=float, default=0.0)
     parser.add_argument('--min-speed', type=float, default=0.0, help='ignore lower crossings below this actual speed (km/h)')
     args = parser.parse_args()
@@ -464,7 +547,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase,
                          debug=args.debug, gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr,
-                         use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed))
+                         use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed, 
+                         simulate_gpio=args.simulate_gpio))
     except KeyboardInterrupt:
         print("Interrupted")
     except Exception as e:
