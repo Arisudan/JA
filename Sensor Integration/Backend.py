@@ -31,8 +31,10 @@ import websockets
 try:
     import RPi.GPIO as GPIO
     GPIO_AVAILABLE = True
+    print("[GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected")
 except Exception:
     GPIO_AVAILABLE = False
+    print("[GPIO] RPi.GPIO not available - Running in simulation mode (Windows/Linux without GPIO)")
 
 # Defaults
 PORT = 8765
@@ -69,7 +71,7 @@ class PulseCounter:
 
 class DriveBackend:
     def __init__(self, df, tick_hz=TICK_HZ, debounce=0.0, circ=1.94, ppr=1.0,
-                 gpio_pin=17, use_gpio=False, min_speed=0.0, debug=False):
+                 gpio_pin=17, use_gpio=False, min_speed=0.0, debug=False, simulate_gpio=False):
         self.profile = df.copy()
         self.tick_hz = tick_hz
         self.dt = 1.0 / tick_hz
@@ -77,7 +79,8 @@ class DriveBackend:
         self.circ = float(circ)
         self.ppr = float(ppr)
         self.gpio_pin = int(gpio_pin)
-        self.use_gpio = bool(use_gpio) and GPIO_AVAILABLE
+        self.use_gpio = bool(use_gpio) and (GPIO_AVAILABLE or simulate_gpio)
+        self.simulate_gpio = bool(simulate_gpio) and not GPIO_AVAILABLE
         self.min_speed = float(min_speed)   # ignore tiny lower-crossings when actual < this
         self.debug = bool(debug)
 
@@ -123,13 +126,20 @@ class DriveBackend:
             self._setup_gpio()
 
     def _setup_gpio(self):
+        if self.simulate_gpio:
+            # Simulation mode for testing on Windows/non-Pi systems
+            if self.debug:
+                print(f"[GPIO] SIMULATION MODE - GPIO pin {self.gpio_pin} configured for testing")
+                print("[GPIO] Real mode will work but use manual speed input until on Raspberry Pi")
+            return
+            
         try:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)  # Enable pull-up for better signal stability
             # Reduced bouncetime from 10ms to 5ms for more responsive sensor detection
             GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=5)
             if self.debug:
-                print(f"[GPIO] configured BCM{self.gpio_pin} with pull-up resistor and 5ms debounce")
+                print(f"[GPIO] REAL HARDWARE - BCM{self.gpio_pin} configured with pull-up resistor and 5ms debounce")
         except Exception as e:
             print("[GPIO] setup failed:", e)
             self.use_gpio = False
@@ -233,8 +243,24 @@ class DriveBackend:
         elif cmd == "set_mode":
             m = obj.get("mode")
             if m in ("manual","real"):
+                prev_mode = self.mode
                 self.mode = m
-                if self.debug: print("[CMD] set_mode", m)
+                if self.debug: 
+                    if m == "real" and self.use_gpio:
+                        print(f"[CMD] Mode switched to REAL sensor (GPIO pin {self.gpio_pin}) - Manual controls disabled")
+                    elif m == "real" and not self.use_gpio:
+                        print(f"[CMD] Mode set to REAL but GPIO not enabled! Use --use-gpio flag to enable sensor input")
+                    else:
+                        print(f"[CMD] Mode switched to MANUAL - GPIO sensor input disabled")
+                        
+                # Send mode confirmation back to frontend
+                mode_msg = {
+                    "type": "mode_status",
+                    "mode": m,
+                    "gpio_enabled": self.use_gpio,
+                    "gpio_pin": self.gpio_pin if self.use_gpio else None
+                }
+                await self.broadcast(mode_msg)
         elif cmd == "manual_speed":
             try:
                 self.manual_speed = float(obj.get("speed", 0.0))
@@ -312,24 +338,32 @@ class DriveBackend:
                 self.elapsed = time.monotonic() - (self.start_monotonic or time.monotonic())
                 if self.elapsed < 0: self.elapsed = 0.0
 
-                # pick speed
-                if self.mode == "manual" or not self.use_gpio:
+                # pick speed based on current mode
+                if self.mode == "manual":
+                    # Manual mode: always use manual_speed regardless of GPIO availability
                     self.actual_speed = float(self.manual_speed)
-                    if self.debug and self.mode == "manual":
+                    if self.debug:
                         # Only log manual speed changes occasionally to avoid spam
-                        if hasattr(self, '_last_manual_log') and time.monotonic() - self._last_manual_log < 2.0:
-                            pass
-                        else:
+                        if not hasattr(self, '_last_manual_log') or time.monotonic() - self._last_manual_log > 2.0:
                             self._last_manual_log = time.monotonic()
-                            print(f"[MANUAL] Speed set to {self.actual_speed:.1f} km/h")
-                else:
-                    # Real sensor mode - compute speed from GPIO pulses
+                            print(f"[MANUAL] Using manual speed: {self.actual_speed:.1f} km/h")
+                            
+                elif self.mode == "real" and self.use_gpio:
+                    # Real sensor mode with GPIO enabled - compute speed from GPIO pulses
                     prev_speed = getattr(self, '_prev_sensor_speed', 0.0)
                     self.actual_speed = self.compute_speed()
                     self._prev_sensor_speed = self.actual_speed
                     
                     if self.debug and abs(self.actual_speed - prev_speed) > 0.5:
-                        print(f"[SENSOR] Real-time speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f})")
+                        print(f"[SENSOR] Real-time GPIO speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f})")
+                        
+                else:
+                    # Real mode requested but GPIO not available - fallback to manual
+                    self.actual_speed = float(self.manual_speed)
+                    if self.debug:
+                        if not hasattr(self, '_last_fallback_log') or time.monotonic() - self._last_fallback_log > 5.0:
+                            self._last_fallback_log = time.monotonic()
+                            print(f"[FALLBACK] Real mode requested but GPIO unavailable - using manual speed: {self.actual_speed:.1f} km/h")
 
                 target, upper, lower = self.interp_profile(self.elapsed)
 
@@ -413,7 +447,7 @@ class DriveBackend:
 
 # main
 async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=False, debug=False,
-               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=0.0):
+               gpio_pin=17, circ=1.94, ppr=1.0, use_gpio=False, debounce=0.0, min_speed=0.0, simulate_gpio=False):
     df = pd.read_csv(profile_path)
     if 'time' not in df.columns or 'target' not in df.columns:
         print("Profile CSV must contain 'time' and 'target' columns")
@@ -431,7 +465,7 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
             print(f"[MAIN] rebased by {t0}s -> new start {df['time'].iloc[0]}s")
 
     backend = DriveBackend(df, tick_hz=TICK_HZ, debounce=debounce, circ=circ, ppr=ppr,
-                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug)
+                           gpio_pin=gpio_pin, use_gpio=use_gpio, min_speed=min_speed, debug=debug, simulate_gpio=simulate_gpio)
 
     try:
         server = await websockets.serve(lambda ws, path=None: backend.handler(ws, path), host, port)
@@ -439,7 +473,16 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
         print("Fatal: could not bind websocket port:", e)
         raise
 
-    print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={'on' if backend.use_gpio else 'off'}")
+    gpio_status = "ON" if backend.use_gpio else "OFF"
+    gpio_pin_info = f" (Pin {backend.gpio_pin})" if backend.use_gpio else ""
+    print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={gpio_status}{gpio_pin_info}")
+    
+    if backend.use_gpio:
+        print(f"[GPIO] Real sensor mode ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
+        print(f"[GPIO] Wheel circumference: {backend.circ}m, Pulses per revolution: {backend.ppr}")
+    else:
+        print("[GPIO] Manual mode only - use --use-gpio to enable real sensor input")
+    
     loop = asyncio.get_running_loop()
     loop.create_task(backend.run_loop())
 
@@ -478,6 +521,7 @@ if __name__ == "__main__":
     parser.add_argument('--circ', type=float, default=1.94)
     parser.add_argument('--ppr', type=float, default=1.0)
     parser.add_argument('--use-gpio', action='store_true')
+    parser.add_argument('--simulate-gpio', action='store_true', help='simulate GPIO for testing on non-Pi systems')
     parser.add_argument('--debounce', type=float, default=0.0)
     parser.add_argument('--min-speed', type=float, default=0.0, help='ignore lower crossings below this actual speed (km/h)')
     args = parser.parse_args()
@@ -486,7 +530,8 @@ if __name__ == "__main__":
     try:
         asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase,
                          debug=args.debug, gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr,
-                         use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed))
+                         use_gpio=args.use_gpio, debounce=args.debounce, min_speed=args.min_speed, 
+                         simulate_gpio=args.simulate_gpio))
     except KeyboardInterrupt:
         print("Interrupted")
     except Exception as e:
