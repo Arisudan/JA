@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
 """
-backend.py - Drive cycle backend (Option C: count a violation on each inside->outside crossing)
+backend.py - Drive cycle backend (Option C: count a violation for each inside->outside crossing)
 
-Features:
- - Count a VIOLATION each time actual speed crosses from inside -> outside (upper OR lower)
- - Serve profile + live updates via WebSocket (ws://0.0.0.0:8765)
- - Manual mode (slider) and Real mode (GPIO pulses -> speed)
- - Uses same GPIO style as your npn_test_gpio.py (PUD_UP)
- - Writes realtime log rows to logs/test_<ts>.csv at 1 Hz
- - On profile completion saves a full-plot PNG (if matplotlib installed)
- - Safe fallback / simulation mode for non-Pi development
+This version uses the exact same GPIO usage pattern as your working npn_test_gpio.py:
+ - direct import RPi.GPIO at top
+ - GPIO.setmode(GPIO.BCM)
+ - GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-Usage examples:
+Usage:
   # Manual (no GPIO)
   python3 backend.py --profile drive_cycles.csv --rebase --debug
 
-  # With GPIO on Pi (run with sudo for GPIO access)
-  sudo python3 backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --ppr 1 --debounce 0.05 --debug
+  # With GPIO on Pi (use system python with sudo)
+  sudo /usr/bin/python3 backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --ppr 1 --debounce 0.05 --debug
 
-  # Simulate GPIO (for dev)
-  python3 backend.py --profile drive_cycles.csv --simulate-gpio --debug
+Notes:
+ - Logs written in logs/test_<timestamp>.csv at ~1Hz
+ - Each inside->outside crossing increments violations (small CROSS_DEBOUNCE to avoid bounce double-counts)
+ - At profile end the code will save a PNG plot if matplotlib is installed
 """
 
 import argparse
@@ -34,11 +32,18 @@ from collections import deque
 from datetime import datetime
 import datetime as dt
 import threading
-import importlib
 
 import numpy as np
 import pandas as pd
 import websockets
+
+# Import RPi.GPIO directly — same as your working script
+try:
+    import RPi.GPIO as GPIO
+    RPI_GPIO_AVAILABLE = True
+except Exception as e:
+    GPIO = None
+    RPI_GPIO_AVAILABLE = False
 
 # Optional plotting
 try:
@@ -49,24 +54,15 @@ try:
 except Exception:
     MATPLOTLIB_PRESENT = False
 
-# Try import RPi.GPIO (we will require it only when --use-gpio)
-try:
-    import RPi.GPIO as GPIO  # noqa: E402
-    RPI_GPIO_AVAILABLE = True
-except Exception:
-    GPIO = None
-    RPI_GPIO_AVAILABLE = False
-
 # Defaults
 PORT = 8765
-TICK_HZ = 10          # internal update frequency (Hz); UI receives these updates
+TICK_HZ = 10
 LOG_DIR = "logs"
 DEFAULT_TOL = 2.0
-CROSS_DEBOUNCE = 0.2  # seconds to ignore repeated cross counts at nearly same time (hardware bounce/flicker)
-LOG_INTERVAL_S = 1.0  # write logfile once per second
+CROSS_DEBOUNCE = 0.20   # seconds to debounce cross counting
+LOG_INTERVAL_S = 1.0    # write logfile ~1Hz
 
 class PulseCounter:
-    """Thread-safe pulse timestamp queue (for ISR add + counting recent pulses)."""
     def __init__(self, keep_seconds=10.0):
         self.keep_seconds = keep_seconds
         self.lock = threading.Lock()
@@ -99,31 +95,31 @@ class DriveBackend:
         self.profile = df.copy()
         self.tick_hz = tick_hz
         self.dt = 1.0 / tick_hz
-        self.circ = float(circ)          # wheel circumference in meters
-        self.ppr = float(ppr)            # pulses per revolution
+        self.circ = float(circ)
+        self.ppr = float(ppr)
         self.gpio_pin = int(gpio_pin)
         self.request_use_gpio = bool(use_gpio)
         self.simulate_gpio = bool(simulate_gpio)
-        self.use_gpio = False            # set during gpio setup
-        self.debounce = float(debounce)  # used for bouncetime in GPIO event detect (seconds)
+        self.use_gpio = False
+        self.debounce = float(debounce)
         self.debug = bool(debug)
 
-        # runtime state
+        # runtime
         self.running = False
         self.start_monotonic = None
         self.elapsed = 0.0
 
-        # violation counting (Option C)
+        # violation
         self.violations = 0
         self.prev_inside = True
-        self._last_cross_time = 0.0      # for small cross debounce
+        self._last_cross_time = 0.0
 
         # speeds
         self.mode = "manual"
         self.manual_speed = 0.0
         self.actual_speed = 0.0
 
-        # pulse counter for sensor
+        # pulse counting
         self.pulse_counter = PulseCounter(keep_seconds=max(10, int(self.tick_hz * 5)))
 
         # websockets
@@ -141,60 +137,43 @@ class DriveBackend:
         self.logfile = None
         self.csv_writer = None
         self._last_log_time = -1.0
-        self.log_rows_for_plot = []  # keep data for final PNG
+        self.log_rows_for_plot = []
 
-        # try GPIO setup if requested
+        # set up GPIO if requested
         if self.request_use_gpio:
             self._setup_gpio()
 
     def _setup_gpio(self):
-        """Set up RPi.GPIO in same style as your working npn_test_gpio.py (PUD_UP)."""
-        global RPI_GPIO_AVAILABLE, GPIO
+        # If user asked for simulate_gpio, don't touch real GPIO
         if self.simulate_gpio:
             self.use_gpio = True
             if self.debug:
-                print("[GPIO] SIMULATION MODE enabled")
+                print("[GPIO] simulate mode enabled")
             return
 
         if not RPI_GPIO_AVAILABLE:
-            # the import failed at module import time; attempt dynamic import now for robustness
-            try:
-                GPIO = importlib.import_module('RPi.GPIO')
-                RPI_GPIO_AVAILABLE = True
-            except Exception as e:
-                print("[GPIO] RPi.GPIO import failed:", e)
-                print("[GPIO] Run on Raspberry Pi with python3-rpi.gpio installed and run with sudo.")
-                self.use_gpio = False
-                return
+            print("[GPIO] RPi.GPIO import failed. Run on Raspberry Pi with python3-rpi.gpio installed and run with sudo.")
+            self.use_gpio = False
+            return
 
-        # configure using PUD_UP like your working test script
+        # Match your working test: PUD_UP and direct setup
         try:
             GPIO.setmode(GPIO.BCM)
-            # Use internal pull-up (mirror your working test) so idle reads HIGH
             GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-            # compute ms
-            if self.debounce > 0:
-                bouncetime_ms = max(1, int(round(self.debounce * 1000)))
-            else:
-                bouncetime_ms = 50  # safe default 50ms
-
-            # add event detect for FALLING (sensor output pulls to GND when triggered)
+            bouncetime_ms = max(1, int(round(self.debounce * 1000))) if self.debounce > 0 else 50
             GPIO.add_event_detect(self.gpio_pin, GPIO.FALLING, callback=self._gpio_cb, bouncetime=bouncetime_ms)
             self.use_gpio = True
             if self.debug:
                 print(f"[GPIO] BCM{self.gpio_pin} configured PUD_UP bouncetime={bouncetime_ms}ms")
         except Exception as e:
             print("[GPIO] setup failed:", e)
-            print("[GPIO] Ensure you ran with sudo (or have GPIO permissions) and RPi.GPIO is installed.")
             self.use_gpio = False
 
     def _gpio_cb(self, ch):
-        """GPIO ISR callback - record pulse timestamp in thread-safe deque."""
         ts = time.monotonic()
         self.pulse_counter.add(ts)
         if self.debug:
-            # show simple pulse debug
             if hasattr(self, '_last_pulse_time'):
                 interval = ts - self._last_pulse_time
                 freq = 1.0 / interval if interval > 0 else 0.0
@@ -215,12 +194,12 @@ class DriveBackend:
 
     async def register(self, ws):
         self.clients.add(ws)
-        prof_msg = {"type":"profile", "profile": {"time": self.times.tolist(), "target": self.targets.tolist(), "upper": self.uppers.tolist(), "lower": self.lowers.tolist()}}
+        prof_msg = {"type":"profile","profile":{"time":self.times.tolist(),"target":self.targets.tolist(),"upper":self.uppers.tolist(),"lower":self.lowers.tolist()}}
         try:
             await ws.send(json.dumps(prof_msg))
             await ws.send(json.dumps(self.snapshot()))
             if self.debug:
-                print("[WS] Sent profile + snapshot")
+                print("[WS] sent profile + snapshot")
         except Exception:
             pass
 
@@ -247,7 +226,6 @@ class DriveBackend:
             if not self.running:
                 self.running = True
                 self.start_monotonic = time.monotonic() - self.elapsed
-                # initialize prev_inside using current speed
                 if (self.mode == "manual") or (not self.use_gpio):
                     now_actual = float(self.manual_speed)
                 else:
@@ -279,7 +257,7 @@ class DriveBackend:
             if m in ("manual","real"):
                 self.mode = m
                 if self.debug:
-                    print(f"[CMD] mode set {m} (gpio_enabled={self.use_gpio})")
+                    print(f"[CMD] set_mode {m} (gpio_enabled={self.use_gpio})")
                 await self.broadcast({"type":"mode_status","mode":m,"gpio_enabled":self.use_gpio,"gpio_pin": self.gpio_pin if self.use_gpio else None})
         elif cmd == "manual_speed":
             try:
@@ -304,7 +282,6 @@ class DriveBackend:
             self.csv_writer = None
 
     def _write_log_row(self, elapsed, target, upper, lower, actual, violations):
-        # Write only at approx 1 Hz to match spec (LOG_INTERVAL_S)
         now = time.monotonic()
         if self._last_log_time < 0 or (now - self._last_log_time) >= LOG_INTERVAL_S:
             self._last_log_time = now
@@ -313,7 +290,6 @@ class DriveBackend:
             try:
                 self.csv_writer.writerow([datetime.now(dt.timezone.utc).isoformat(), int(time.time()*1000), round(elapsed,3), round(target,3), round(upper,3), round(lower,3), round(actual,3), int(violations)])
                 self.logfile.flush()
-                # also keep a copy for final plot
                 self.log_rows_for_plot.append((elapsed, target, upper, lower, actual))
             except Exception:
                 pass
@@ -328,14 +304,12 @@ class DriveBackend:
         self.csv_writer = None
 
     def compute_speed(self):
-        # compute pulses per second over short window (0.5s)
         window = 0.5
         pulses = self.pulse_counter.count_recent(window)
         pps = pulses / window
         rps = pps / max(1.0, self.ppr)
         speed_mps = rps * self.circ
         speed_kmh = speed_mps * 3.6
-        # simple smoothing (70% new, 30% prev)
         if hasattr(self, '_prev_computed_speed'):
             speed_kmh = 0.7 * speed_kmh + 0.3 * self._prev_computed_speed
         self._prev_computed_speed = speed_kmh
@@ -373,10 +347,8 @@ class DriveBackend:
             uppers = arr[:,2].astype(float)
             lowers = arr[:,3].astype(float)
             actuals = arr[:,4].astype(float)
-
             ts = datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
             out_png = os.path.join(LOG_DIR, f"drive_plot_{ts}.png")
-
             plt.figure(figsize=(12,5))
             plt.plot(times, uppers, label='Upper', linewidth=1.5)
             plt.plot(times, lowers, label='Lower', linewidth=1.5)
@@ -403,7 +375,7 @@ class DriveBackend:
                 if self.elapsed < 0:
                     self.elapsed = 0.0
 
-                # choose speed source
+                # source selection
                 if self.mode == "manual":
                     self.actual_speed = float(self.manual_speed)
                 elif self.mode == "real" and self.use_gpio:
@@ -416,14 +388,12 @@ class DriveBackend:
                     self.actual_speed = float(self.manual_speed)
 
                 target, upper, lower = self.interp_profile(self.elapsed)
-
                 inside = (self.actual_speed >= lower) and (self.actual_speed <= upper)
 
-                # Option C violation: count once each time we go inside->outside (either side)
+                # Option C: count violation each inside->outside transition
                 crossed_flag = False
                 cross_side = None
                 if (not inside) and self.prev_inside:
-                    # apply small debounce to avoid multiple counts in same event
                     nowm = time.monotonic()
                     if nowm - self._last_cross_time >= CROSS_DEBOUNCE:
                         self.violations += 1
@@ -432,10 +402,8 @@ class DriveBackend:
                         self._last_cross_time = nowm
                         if self.debug:
                             print(f"[VIOL] #{self.violations} at {self.elapsed:.2f}s actual={self.actual_speed:.2f} crossed {cross_side} band({lower:.2f}-{upper:.2f})")
-                # update prev_inside for next tick
                 self.prev_inside = inside
 
-                # prepare update message
                 msg = {
                     "type":"update",
                     "time": round(self.elapsed, 2),
@@ -449,14 +417,11 @@ class DriveBackend:
                     "cross_side": cross_side if crossed_flag else None
                 }
 
-                # log (1 Hz) and broadcast
                 self._write_log_row(self.elapsed, target, upper, lower, self.actual_speed, self.violations)
                 await self.broadcast(msg)
 
-                # stop at end
                 if self.elapsed >= self.profile_end:
                     await self.broadcast({"type":"complete","time":round(self.elapsed,2),"violations":int(self.violations)})
-                    # save final PNG (if available)
                     self._save_final_plot()
                     self.running = False
                     self._close_log()
@@ -473,7 +438,6 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
         print("Profile CSV must contain 'time' and 'target' columns")
         sys.exit(1)
 
-    # compute upper/lower if missing
     if 'upper' not in df.columns:
         df['upper'] = df['target'] + tol
     if 'lower' not in df.columns:
@@ -546,7 +510,7 @@ if __name__ == "__main__":
     parser.add_argument('--ppr', type=float, default=1.0)
     parser.add_argument('--use-gpio', action='store_true')
     parser.add_argument('--simulate-gpio', action='store_true')
-    parser.add_argument('--debounce', type=float, default=0.05, help='GPIO debounce in seconds (bouncetime)')
+    parser.add_argument('--debounce', type=float, default=0.05, help='GPIO debounce seconds')
     args = parser.parse_args()
 
     print("[MAIN] backend starting with profile:", args.profile)
