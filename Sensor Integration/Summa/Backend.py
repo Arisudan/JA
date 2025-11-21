@@ -133,8 +133,10 @@ class DriveBackend:
             return
             
         try:
+            # Use Broadcom pin-numbering scheme (like your LED example)
             GPIO.setmode(GPIO.BCM)
-            # Setup for NPN proximity sensor with internal pull-up
+            
+            # Setup GPIO17 as INPUT for NPN proximity sensor (instead of OUTPUT like LED)
             # NPN sensor: HIGH (idle/no detection), LOW (detected/pulled to ground)
             GPIO.setup(self.gpio_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             
@@ -143,9 +145,13 @@ class DriveBackend:
             # RISING: sensor loses object (releases to HIGH)
             GPIO.add_event_detect(self.gpio_pin, GPIO.BOTH, callback=self._gpio_cb, bouncetime=int(self.debounce*1000))
             
-            # Initialize sensor state tracking
+            # Initialize sensor state tracking (like your LED state)
             self.last_gpio_state = GPIO.input(self.gpio_pin)
             self.gpio_active = False  # Track if sensor is currently detecting
+            
+            # Start continuous sensor monitoring thread (similar to your while True loop)
+            self.sensor_thread = threading.Thread(target=self._continuous_sensor_monitor, daemon=True)
+            self.sensor_thread.start()
             
             if self.debug:
                 initial_state = "HIGH (idle)" if self.last_gpio_state else "LOW (detecting)"
@@ -153,6 +159,7 @@ class DriveBackend:
                 print(f"[GPIO] Initial sensor state: {initial_state}")
                 print(f"[GPIO] Debounce time: {self.debounce*1000:.0f}ms")
                 print(f"[GPIO] SUCCESS - GPIO pin {self.gpio_pin} ready for NPN sensor input")
+                print(f"[GPIO] Continuous monitoring thread started")
                 
                 # Test GPIO functionality
                 self._test_gpio_connection()
@@ -194,40 +201,141 @@ class DriveBackend:
         current_time = time.monotonic()
         current_state = GPIO.input(ch)
         
-        # NPN sensor logic: LOW = detecting, HIGH = idle
+        # NPN sensor logic: LOW = detecting, HIGH = idle (like your test code)
         if current_state != self.last_gpio_state:
-            if current_state == GPIO.LOW:
-                # Sensor detected object - count as pulse for speed calculation
-                self.pulse_counter.add(current_time)
-                self.gpio_active = True
-                
-                # Show pulse detection in terminal (always, not just debug mode)
-                ts = time.strftime("%H:%M:%S.%f")[:-3]
-                if hasattr(self, '_last_pulse_time'):
-                    pulse_interval = current_time - self._last_pulse_time
-                    freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
-                    rpm = freq * 60 / max(1.0, self.ppr)  # Calculate RPM
-                    speed_estimate = (freq / self.ppr) * self.circ * 3.6  # Instant speed estimate
-                    print(f"🔵 [{ts}] PULSE DETECTED -> Pin17=LOW | Interval={pulse_interval*1000:.1f}ms | Freq={freq:.2f}Hz | RPM={rpm:.1f} | Est.Speed={speed_estimate:.1f}km/h")
-                else:
-                    print(f"🔵 [{ts}] FIRST PULSE DETECTED -> NPN Sensor activated")
-                self._last_pulse_time = current_time
-                
-                if self.debug:
-                    print(f"[DEBUG] GPIO callback - Pin {ch} went LOW, pulse count incremented")
-                    
-            else:  # current_state == GPIO.HIGH
-                # Sensor lost object
-                self.gpio_active = False
-                
-                # Show sensor release in terminal
-                ts = time.strftime("%H:%M:%S.%f")[:-3]
-                print(f"⚪ [{ts}] SENSOR RELEASE -> Pin17=HIGH (object passed)")
-                
-                if self.debug:
-                    print(f"[DEBUG] GPIO callback - Pin {ch} went HIGH, sensor idle")
+            # Simple debounce like your test code
+            time.sleep(0.001)  # Small debounce
+            debounced_state = GPIO.input(ch)
             
-            self.last_gpio_state = current_state
+            if debounced_state == current_state:  # State confirmed after debounce
+                ts = time.strftime("%H:%M:%S.%f")[:-3]
+                
+                if current_state == GPIO.LOW:
+                    # Sensor detected object - show detection like your test code
+                    self.pulse_counter.add(current_time)
+                    self.gpio_active = True
+                    
+                    # Calculate real-time sensor values (like your test but with speed calculation)
+                    if hasattr(self, '_last_pulse_time'):
+                        pulse_interval = current_time - self._last_pulse_time
+                        freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
+                        rpm = freq * 60 / max(1.0, self.ppr)
+                        speed_estimate = (freq / self.ppr) * self.circ * 3.6
+                        
+                        # Show detection with sensor values (enhanced version of your LOW message)
+                        print(f"🔴 [{ts}] -> LOW  (SENSOR DETECTED/OUTPUT PULLED LOW)")
+                        print(f"    📊 SENSOR VALUES: Interval={pulse_interval*1000:.1f}ms | Freq={freq:.2f}Hz | RPM={rpm:.1f} | Speed={speed_estimate:.1f}km/h")
+                    else:
+                        print(f"🔴 [{ts}] -> LOW  (FIRST DETECTION - SENSOR ACTIVATED)")
+                        print(f"    📊 SENSOR VALUES: Initial detection, calculating speed...")
+                    
+                    self._last_pulse_time = current_time
+                    
+                else:  # current_state == GPIO.HIGH
+                    # Sensor lost object - show like your test code HIGH message
+                    self.gpio_active = False
+                    
+                    # Calculate time sensor was active
+                    if hasattr(self, '_last_detection_time'):
+                        detection_duration = current_time - self._last_detection_time
+                        print(f"🟢 [{ts}] -> HIGH (OUTPUT OPEN, NO METAL DETECTED)")
+                        print(f"    ⏱️  DETECTION DURATION: {detection_duration*1000:.1f}ms")
+                    else:
+                        print(f"🟢 [{ts}] -> HIGH (OUTPUT OPEN, NO METAL DETECTED)")
+                    
+                    self._last_detection_time = current_time
+                
+                self.last_gpio_state = current_state
+                
+                # Send real-time sensor values to HTML UI (like your test but to web interface)
+                if hasattr(self, 'clients') and self.clients:
+                    sensor_value_msg = {
+                        "type": "sensor_realtime",
+                        "gpio_state": "LOW (DETECTING)" if current_state == GPIO.LOW else "HIGH (IDLE)",
+                        "sensor_active": current_state == GPIO.LOW,
+                        "detection_time": ts,
+                        "gpio_pin": self.gpio_pin,
+                        "raw_value": "DETECTED" if current_state == GPIO.LOW else "NO DETECTION",
+                        "current_speed": round(self.actual_speed, 2)
+                    }
+                    
+                    # Send to HTML clients immediately
+                    for client in list(self.clients):
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                client.send(json.dumps(sensor_value_msg)), 
+                                asyncio.get_event_loop()
+                            )
+                        except:
+                            pass
+
+    def _continuous_sensor_monitor(self):
+        """Continuous sensor monitoring loop (similar to your GPIO test code while True loop)"""
+        try:
+            print(f"[MONITOR] Starting continuous NPN sensor monitoring on GPIO {self.gpio_pin}")
+            print(f"[MONITOR] Like your test code - monitoring for state changes...")
+            print(f"")
+            
+            last_display_state = None
+            last_speed_display = 0.0
+            
+            while True:
+                if not self.use_gpio:
+                    break
+                    
+                # Read current GPIO state (like your test code GPIO.input(PIN))
+                current_state = GPIO.input(self.gpio_pin)
+                
+                # Update sensor status for speed calculation
+                self.gpio_active = (current_state == GPIO.LOW)  # NPN sensor active when LOW
+                self.actual_speed = self.compute_speed()
+                
+                # Show continuous sensor values (like your test code but with more detail)
+                # Only display when state changes or speed changes significantly
+                if (current_state != last_display_state) or (abs(self.actual_speed - last_speed_display) > 0.5):
+                    ts = time.strftime("%H:%M:%S.%f")[:-3]
+                    state_text = "LOW (DETECTING)" if current_state == GPIO.LOW else "HIGH (IDLE)"
+                    detection_status = "METAL DETECTED" if current_state == GPIO.LOW else "NO DETECTION"
+                    
+                    # Enhanced display (like your test but with real-time sensor values)
+                    pulses_recent = self.pulse_counter.count_recent(1.0)
+                    print(f"📡 [{ts}] GPIO{self.gpio_pin}: {state_text} | Status: {detection_status} | PPS: {pulses_recent} | Speed: {self.actual_speed:.1f} km/h")
+                    
+                    last_display_state = current_state
+                    last_speed_display = self.actual_speed
+                
+                # Send real-time data to HTML UI (every 0.2 seconds for responsiveness)
+                if hasattr(self, 'clients') and self.clients:
+                    # Send sensor status (like your test code state monitoring)
+                    status_msg = {
+                        "type": "sensor_status",
+                        "sensor_active": self.gpio_active,
+                        "gpio_level": "LOW" if current_state == GPIO.LOW else "HIGH",
+                        "pulses_per_second": self.pulse_counter.count_recent(1.0),
+                        "current_speed": round(self.actual_speed, 2),
+                        "gpio_pin": self.gpio_pin,
+                        "sensor_type": "NPN Proximity",
+                        "timestamp": time.strftime("%H:%M:%S"),
+                        "raw_detection": "DETECTING" if current_state == GPIO.LOW else "IDLE"
+                    }
+                    
+                    # Send to all connected HTML clients
+                    for client in list(self.clients):
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                client.send(json.dumps(status_msg)), 
+                                asyncio.get_event_loop()
+                            )
+                        except:
+                            pass
+                
+                # Small sleep like your test code (0.005 seconds for high responsiveness)
+                time.sleep(0.005)  # Same as your test code timing
+                
+        except Exception as e:
+            if self.debug:
+                print(f"[GPIO-MONITOR] Continuous monitoring stopped: {e}")
+            print(f"[MONITOR] NPN sensor monitoring ended - {e}")
 
     def _test_gpio_connection(self):
         """Test GPIO pin connectivity and provide diagnostic information"""
@@ -629,15 +737,24 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
     print(f"[MAIN] WebSocket server ws://{host}:{port}  GPIO={gpio_status}{gpio_pin_info}")
     
     if backend.use_gpio:
-        print(f"[GPIO] NPN SENSOR MODE ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
+        print(f"[GPIO] NPN SENSOR MODE ENABLED - Pin {backend.gpio_pin} ready for real-time detection")
         print(f"[GPIO] Wheel circumference: {backend.circ}m, Pulses per revolution: {backend.ppr}")
         print(f"[GPIO] Sensor wiring: Red->12V, Black->GND, Green->GPIO{backend.gpio_pin}")
         print(f"")
-        print(f"📡 REAL-TIME SENSOR MONITORING ACTIVE")
-        print(f"   Terminal will display live sensor values when test is running")
-        print(f"   Format: [TIME] SENSOR: Pin17=STATE | Status=DETECTING/IDLE | PPS=X | Speed=X.Xkm/h | Target=X.X | Limits=[X.X-X.X] | COMPLIANT/VIOLATION")
-        print(f"   Violations will be highlighted with 🚨 alerts")
-        print(f"   Press Ctrl+C to stop")
+        print(f"📡 ENHANCED REAL-TIME SENSOR MONITORING (Similar to your GPIO test code)")
+        print(f"   ✓ Continuous GPIO state monitoring every 5ms (like your test code)")
+        print(f"   ✓ Real-time detection values: HIGH (idle) / LOW (detecting)")
+        print(f"   ✓ Live sensor data in terminal: [TIME] GPIOx: STATE | Status | PPS | Speed")
+        print(f"   ✓ Instant HTML UI updates with sensor values")
+        print(f"   ✓ Enhanced debouncing and state change detection")
+        print(f"")
+        print(f"🔍 MONITORING FORMATS:")
+        print(f"   Real-time: 📡 [HH:MM:SS.mmm] GPIO{backend.gpio_pin}: HIGH/LOW | Status | PPS | Speed")
+        print(f"   Detection: 🔴 [HH:MM:SS.mmm] -> LOW (SENSOR DETECTED/OUTPUT PULLED LOW)")  
+        print(f"   Release:   🟢 [HH:MM:SS.mmm] -> HIGH (OUTPUT OPEN, NO METAL DETECTED)")
+        print(f"   Test Mode: [HH:MM:SS] SENSOR: Pin17=STATE | Status | Speed | Limits | Compliance")
+        print(f"")
+        print(f"🚨 Violations will be highlighted with alerts | Press Ctrl+C to stop")
         print(f"")
     else:
         print("")
