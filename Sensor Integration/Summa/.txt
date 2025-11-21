@@ -1,28 +1,24 @@
-python Backend.py --profile drive_cycles.csv --rebase --debug --use-gpio --simulate-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05
-
-
-
-psg@raspberrypi:~/project $ source myenv/bin/activate
-(myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
-[GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
-[MAIN] backend starting with profile: drive_cycle.csv
-[MAIN] rebased by 0s -> new start 0s
-[GPIO] setup failed: Failed to add edge detection
-[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=OFF
-[ERROR] GPIO REQUIRED! This system requires NPN sensor input.
-[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
-(myenv) psg@raspberrypi:~/project $ 
-
-
-
-error 
-
-(myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
+(myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycles.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
 [GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
 [MAIN] backend starting with profile: drive_cycles.csv
-Fatal: [Errno 2] No such file or directory: 'drive_cycles.csv'
+[MAIN] rebased by 0s -> new start 0s
+[GPIO] ❌ EDGE DETECTION FAILED: GPIO pin 17 access denied
+[GPIO] Root cause: Insufficient permissions to access GPIO hardware
+[GPIO]
+[GPIO] 🔧 SOLUTION 1 (Immediate): Run with sudo:
+[GPIO]   sudo myenv/bin/python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
+[GPIO]
+[GPIO] 🔧 SOLUTION 2 (Permanent): Add user to gpio group:
+[GPIO]   sudo usermod -a -G gpio $USER
+[GPIO]   sudo reboot
+[GPIO]   # Then run without sudo
+
+[GPIO] ⚠️  CONTINUING WITHOUT GPIO - System will show demo data only!
+[GPIO] Real sensor functionality requires GPIO access
+Fatal: could not bind websocket port: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8765): [errno 98] address already in use
+Fatal: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8765): [errno 98] address already in use
 Traceback (most recent call last):
-  File "/home/psg/project/backend.py", line 637, in <module>
+  File "/home/psg/project/backend.py", line 709, in <module>
     asyncio.run(main(args.profile, host=args.host, port=args.port, tol=args.tol, rebase=args.rebase,
     ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
                      debug=args.debug, gpio_pin=args.gpio_pin, circ=args.circ, ppr=args.ppr,
@@ -40,43 +36,12 @@ Traceback (most recent call last):
   File "/usr/lib/python3.13/asyncio/base_events.py", line 725, in run_until_complete
     return future.result()
            ~~~~~~~~~~~~~^^
-  File "/home/psg/project/backend.py", line 547, in main
-    df = pd.read_csv(profile_path)
-  File "/home/psg/project/myenv/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1026, in read_csv
-    return _read(filepath_or_buffer, kwds)
-  File "/home/psg/project/myenv/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 620, in _read
-    parser = TextFileReader(filepath_or_buffer, **kwds)
-  File "/home/psg/project/myenv/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1620, in __init__
-    self._engine = self._make_engine(f, self.engine)
-                   ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^
-  File "/home/psg/project/myenv/lib/python3.13/site-packages/pandas/io/parsers/readers.py", line 1880, in _make_engine
-    self.handles = get_handle(
-                   ~~~~~~~~~~^
-        f,
-        ^^
-    ...<6 lines>...
-        storage_options=self.options.get("storage_options", None),
-        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    )
-    ^
-  File "/home/psg/project/myenv/lib/python3.13/site-packages/pandas/io/common.py", line 873, in get_handle
-    handle = open(
-        handle,
-    ...<3 lines>...
-        newline="",
-    )
-FileNotFoundError: [Errno 2] No such file or directory: 'drive_cycles.csv'
-(myenv) psg@raspberrypi:~/project $ 
-
-
-ERROR1
-
-psg@raspberrypi:~/project $ sudo python3 backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
-[GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
-[MAIN] backend starting with profile: drive_cycles.csv
-[GPIO] setup failed: Bouncetime must be greater than 0
-[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=OFF
-[ERROR] GPIO REQUIRED! This system requires NPN sensor input.
-[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
-psg@raspberrypi:~/project $ 
-
+  File "/home/psg/project/backend.py", line 622, in main
+    server = await websockets.serve(lambda ws, path=None: backend.handler(ws, path), host, port)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/psg/project/myenv/lib/python3.13/site-packages/websockets/asyncio/server.py", line 831, in __await_impl__
+    server = await self.create_server
+             ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.13/asyncio/base_events.py", line 1622, in create_server
+    raise OSError(err.errno, msg) from None
+OSError: [Errno 98] error while attempting to bind on address ('0.0.0.0', 8765): [errno 98] address already in use
