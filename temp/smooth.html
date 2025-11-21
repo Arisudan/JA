@@ -6,24 +6,20 @@
     <title>Hero Drive Cycle</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Annotation Plugin Removed since you don't need lines -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/1.4.0/chartjs-plugin-annotation.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
         body { background: #061018; color: #dfe9f3; font-family: Arial, sans-serif; margin: 0; padding: 8px; height: 100vh; overflow: hidden; }
         .card { background: #0c1620; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); border: 1px solid #1f2937; }
         
-        /* Big Font Style */
         .big-text { font-size: 100px; font-weight: 900; line-height: 1; text-align: center; }
         
-        /* Animations */
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .status-active { color: #4ade80; animation: pulse 1s infinite; }
         
-        /* Compact Button */
         .btn { padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 6px; transition: 0.2s; }
         .btn:active { transform: scale(0.98); }
         
-        /* Dropdown */
         .dropdown-content { display: none; position: absolute; right: 0; bottom: 100%; margin-bottom: 5px; background-color: #1a2a3a; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 4px; border: 1px solid #374151; }
         .dropdown-content button { color: #dfe9f3; padding: 12px 16px; text-decoration: none; display: block; width: 100%; text-align: left; background: none; }
         .dropdown-content button:hover { background-color: #2d3748; }
@@ -32,30 +28,21 @@
 </head>
 <body class="flex flex-col gap-3 h-full">
 
-    <!-- TOP SECTION: Stats & Controls (40% Height) -->
     <div class="flex gap-3 h-[40%]">
         
-        <!-- Stats Card -->
         <div class="card flex-1 flex items-center justify-around px-4">
-            <!-- Actual Speed -->
             <div class="flex flex-col items-center">
                 <div class="text-xs text-gray-400 mb-1">ACTUAL</div>
                 <div id="actual" class="big-text text-green-400">0.0</div>
                 <div class="text-xs text-gray-500">km/h</div>
             </div>
-            
             <div class="h-32 w-px bg-gray-700"></div>
-            
-            <!-- Target Speed -->
             <div class="flex flex-col items-center">
                 <div class="text-xs text-gray-400 mb-1">TARGET</div>
                 <div id="target" class="big-text text-white">0.0</div>
                 <div class="text-xs text-gray-500">km/h</div>
             </div>
-            
             <div class="h-32 w-px bg-gray-700"></div>
-            
-            <!-- Time & Violations -->
             <div class="flex flex-col gap-6">
                 <div class="flex flex-col items-center min-w-[100px]">
                     <div class="text-xs text-gray-400">ELAPSED</div>
@@ -70,7 +57,6 @@
             </div>
         </div>
 
-        <!-- Right Control Panel -->
         <div class="card w-[30%] flex flex-col justify-between p-4">
             <div class="flex justify-between items-start">
                 <div>
@@ -115,7 +101,6 @@
         </div>
     </div>
 
-    <!-- BOTTOM SECTION: Chart (60% Height) -->
     <div id="chartWrap" class="card flex-1 relative p-2 min-h-0">
         <canvas id="chart"></canvas>
     </div>
@@ -123,7 +108,7 @@
 <script>
     const WS_URL = "ws://localhost:8765";
     let ws, chart;
-    let driveData = [], actualData = [], singlePoint = [], violationMarkers = [];
+    let driveData = []; 
     let windowSeconds = 20;
     let pendingDlType = null;
 
@@ -141,37 +126,36 @@
     function initChart(targets) {
         const ctx = document.getElementById('chart').getContext('2d');
         const labels = targets.map((_, i) => i);
-        const upper = targets.map(v => v + 2);
-        const lower = targets.map(v => Math.max(0, v - 2));
         
-        actualData = new Array(targets.length).fill(null);
-        singlePoint = new Array(targets.length).fill(null);
-        violationMarkers = [];
+        // Pre-calculate target lines as XY points
+        const tData = targets.map((v, i) => ({x: i, y: v}));
+        const uData = targets.map((v, i) => ({x: i, y: v + 2}));
+        const lData = targets.map((v, i) => ({x: i, y: Math.max(0, v - 2)}));
 
         if(chart) chart.destroy();
 
         chart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: labels,
                 datasets: [
-                    { label: 'Upper', data: upper, borderColor: '#ef4444', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
-                    { label: 'Lower', data: lower, borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(20, 30, 40, 0.5)', tension: 0.1 },
-                    { label: 'Target', data: targets, borderColor: '#40e37a', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.1 },
-                    { label: 'Actual', data: actualData, borderColor: '#ffd400', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.4 },
-                    { label: 'Pos', data: singlePoint, pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: '#ffd400', showLine: false },
-                    { label: 'Viol', data: violationMarkers, type: 'scatter', pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: 'red', showLine: false }
+                    { label: 'Upper', data: uData, borderColor: '#ef4444', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Lower', data: lData, borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(20, 30, 40, 0.5)', tension: 0.1 },
+                    { label: 'Target', data: tData, borderColor: '#40e37a', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.1 },
+                    // THE FIX: 'Actual' is now a scatter-like line that accepts {x,y} inputs
+                    { label: 'Actual', data: [], borderColor: '#ffd400', borderWidth: 3, fill: false, pointRadius: 0, tension: 0.4 },
+                    { label: 'Pos', data: [], pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: '#ffd400', showLine: false },
+                    { label: 'Viol', data: [], type: 'scatter', pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: 'red', showLine: false }
                 ]
             },
             options: {
                 responsive: true, 
                 maintainAspectRatio: false, 
-                animation: { duration: 100, easing: 'linear' }, 
+                animation: false, // Animation handled by frequent updates
                 scales: {
-                    x: { min: 0, max: windowSeconds, grid: {display: false}, ticks: {color: '#9ca3af', font:{size:12}} },
+                    x: { type: 'linear', min: 0, max: windowSeconds, grid: {display: false}, ticks: {color: '#9ca3af', font:{size:12}} },
                     y: { min: 0, max: 60, grid: {display: false}, ticks: {color: '#9ca3af', font:{size:14, weight:'bold'}} }
                 },
-                plugins: { legend: { display: false } } // REMOVED ANNOTATION CONFIG
+                plugins: { legend: { display: false } } 
             }
         });
     }
@@ -190,7 +174,10 @@
             } else if (m.type === "update") {
                 updateDisplay(m);
             } else if (m.type === "violation") {
-                if(chart) { violationMarkers.push({x: m.time, y: m.actual}); chart.update('none'); }
+                if(chart) { 
+                    chart.data.datasets[5].data.push({x: m.time, y: m.actual}); 
+                    chart.update('none'); 
+                }
             } else if (m.type === "csv_download") {
                 if (pendingDlType === 'excel') dlExcel(m.content, m.meta);
                 else dlCsv(m.content, m.meta);
@@ -219,17 +206,26 @@
         else ui.act.className = "big-text text-green-400";
 
         if(chart) {
-            const idx = Math.floor(d.time);
-            if(idx < driveData.length) {
-                actualData[idx] = d.actual;
-                singlePoint.fill(null); singlePoint[idx] = d.actual;
-                
-                // Scrolling
-                let minX = Math.max(0, d.time - (windowSeconds * 0.8));
-                chart.options.scales.x.min = minX;
-                chart.options.scales.x.max = minX + windowSeconds;
-                chart.update('none');
+            // THE FIX: Push EXACT x/y coordinate to graph, don't rely on index
+            const newPoint = {x: d.time, y: d.actual};
+            
+            // Add to history
+            chart.data.datasets[3].data.push(newPoint);
+            
+            // Move Rider Marker
+            chart.data.datasets[4].data = [newPoint];
+            
+            // Scrolling
+            let minX = Math.max(0, d.time - (windowSeconds * 0.8));
+            chart.options.scales.x.min = minX;
+            chart.options.scales.x.max = minX + windowSeconds;
+            
+            // Memory Management: Remove old points outside view to keep it fast
+            if(chart.data.datasets[3].data.length > 500) {
+                chart.data.datasets[3].data = chart.data.datasets[3].data.filter(p => p.x > (d.time - windowSeconds - 10));
             }
+            
+            chart.update('none'); // 'none' mode is fastest
         }
         
         if(d.running) {
@@ -243,7 +239,9 @@
 
     function resetDisplay() {
         if(chart) {
-            actualData.fill(null); singlePoint.fill(null); violationMarkers = [];
+            chart.data.datasets[3].data = []; 
+            chart.data.datasets[4].data = []; 
+            chart.data.datasets[5].data = [];
             chart.options.scales.x.min = 0; chart.options.scales.x.max = windowSeconds;
             chart.update();
         }
@@ -275,7 +273,6 @@
         a.click();
     }
 
-    // --- EVENTS ---
     document.getElementById('startBtn').onclick = () => ws.send(JSON.stringify({cmd: "start"}));
     document.getElementById('stopBtn').onclick = () => ws.send(JSON.stringify({cmd: "stop"}));
     document.getElementById('resetBtn').onclick = () => ws.send(JSON.stringify({cmd: "reset"}));
