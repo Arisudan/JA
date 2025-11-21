@@ -69,3 +69,14 @@ FileNotFoundError: [Errno 2] No such file or directory: 'drive_cycles.csv'
 (myenv) psg@raspberrypi:~/project $ 
 
 
+ERROR1
+
+psg@raspberrypi:~/project $ sudo python3 backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
+[GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
+[MAIN] backend starting with profile: drive_cycles.csv
+[GPIO] setup failed: Bouncetime must be greater than 0
+[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=OFF
+[ERROR] GPIO REQUIRED! This system requires NPN sensor input.
+[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
+psg@raspberrypi:~/project $ 
+
