@@ -167,23 +167,31 @@ class DriveBackend:
                 self.pulse_counter.add(current_time)
                 self.gpio_active = True
                 
+                # Show pulse detection in terminal (always, not just debug mode)
+                ts = time.strftime("%H:%M:%S.%f")[:-3]
+                if hasattr(self, '_last_pulse_time'):
+                    pulse_interval = current_time - self._last_pulse_time
+                    freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
+                    rpm = freq * 60 / max(1.0, self.ppr)  # Calculate RPM
+                    speed_estimate = (freq / self.ppr) * self.circ * 3.6  # Instant speed estimate
+                    print(f"🔵 [{ts}] PULSE DETECTED -> Pin17=LOW | Interval={pulse_interval*1000:.1f}ms | Freq={freq:.2f}Hz | RPM={rpm:.1f} | Est.Speed={speed_estimate:.1f}km/h")
+                else:
+                    print(f"🔵 [{ts}] FIRST PULSE DETECTED -> NPN Sensor activated")
+                self._last_pulse_time = current_time
+                
                 if self.debug:
-                    ts = time.strftime("%H:%M:%S.%f")[:-3]
-                    if hasattr(self, '_last_pulse_time'):
-                        pulse_interval = current_time - self._last_pulse_time
-                        freq = 1.0 / pulse_interval if pulse_interval > 0 else 0
-                        print(f"[{ts}] NPN SENSOR DETECT -> LOW (object detected) - Pulse interval: {pulse_interval*1000:.1f}ms, Freq: {freq:.1f}Hz")
-                    else:
-                        print(f"[{ts}] NPN SENSOR DETECT -> LOW (first detection)")
-                    self._last_pulse_time = current_time
+                    print(f"[DEBUG] GPIO callback - Pin {ch} went LOW, pulse count incremented")
                     
             else:  # current_state == GPIO.HIGH
                 # Sensor lost object
                 self.gpio_active = False
                 
+                # Show sensor release in terminal
+                ts = time.strftime("%H:%M:%S.%f")[:-3]
+                print(f"⚪ [{ts}] SENSOR RELEASE -> Pin17=HIGH (object passed)")
+                
                 if self.debug:
-                    ts = time.strftime("%H:%M:%S.%f")[:-3]
-                    print(f"[{ts}] NPN SENSOR RELEASE -> HIGH (no object detected)")
+                    print(f"[DEBUG] GPIO callback - Pin {ch} went HIGH, sensor idle")
             
             self.last_gpio_state = current_state
 
@@ -243,18 +251,42 @@ class DriveBackend:
                 # Initialize CMVR/AIS violation timer
                 self.violation_timer = 0.0
                 self.last_violation_check = time.monotonic()
+                
+                # Always show test start information
+                timestamp = time.strftime("%H:%M:%S")
+                compliance_status = "✅ COMPLIANT" if self.prev_inside else "❌ NON-COMPLIANT"
+                print(f"")
+                print(f"🚀 [{timestamp}] DRIVE CYCLE TEST STARTED")
+                print(f"   Initial Status: {compliance_status}")
+                print(f"   Current Speed: {self.actual_speed:.1f} km/h")
+                print(f"   Speed Limits: {lower:.1f} - {upper:.1f} km/h")
+                print(f"   Profile Duration: {self.profile_end:.1f} seconds")
+                print(f"   CMVR/AIS Threshold: {self.cmvr_threshold}s sustained violation")
+                print(f"")
+                print(f"📊 REAL-TIME MONITORING:")
+                print(f"=" * 120)
+                
                 if self.debug:
-                    compliance_status = "COMPLIANT" if self.prev_inside else "NON-COMPLIANT" 
-                    print(f"[CMVR] START - Initial status: {compliance_status} (speed={self.actual_speed:.1f}, limits={lower:.1f}-{upper:.1f})")
-                if self.debug:
-                    print(f"[CMD] start (elapsed {self.elapsed:.2f})")
+                    print(f"[DEBUG] CMD start - elapsed={self.elapsed:.2f}s, GPIO={'enabled' if self.use_gpio else 'disabled'}")
                 self._open_log()
         elif cmd == "stop":
             if self.running:
                 self.running = False
                 self._close_log()
+                
+                # Always show test stop information
+                timestamp = time.strftime("%H:%M:%S")
+                print(f"")
+                print(f"=" * 120)
+                print(f"⏹️  [{timestamp}] DRIVE CYCLE TEST STOPPED")
+                print(f"   Total Time: {self.elapsed:.2f} seconds")
+                print(f"   Final Speed: {self.actual_speed:.1f} km/h")
+                print(f"   Total Violations: {self.violations}")
+                print(f"   Test Status: {'❌ FAILED' if self.violations > 0 else '✅ PASSED'}")
+                print(f"")
+                
                 if self.debug:
-                    print("[CMD] stop")
+                    print("[DEBUG] CMD stop - test session ended")
         elif cmd == "reset":
             self.running = False
             self.elapsed = 0.0
@@ -379,18 +411,32 @@ class DriveBackend:
                     self.actual_speed = self.compute_speed()
                     self._prev_sensor_speed = self.actual_speed
                     
-                    # Enhanced debug output for NPN sensor
+                    # REAL-TIME TERMINAL DISPLAY: Show sensor values continuously
+                    pulses_recent = self.pulse_counter.count_recent(1.0)
+                    gpio_level = "HIGH" if getattr(self, 'last_gpio_state', True) else "LOW"
+                    sensor_status = "DETECTING" if hasattr(self, 'gpio_active') and self.gpio_active else "IDLE"
+                    
+                    # Show real-time values every tick when running (10Hz updates)
+                    if self.running:
+                        timestamp = time.strftime("%H:%M:%S")
+                        target, upper, lower = self.interp_profile(self.elapsed)
+                        compliance = "✓ COMPLIANT" if (self.actual_speed >= lower and self.actual_speed <= upper) else "✗ VIOLATION"
+                        
+                        print(f"[{timestamp}] SENSOR: Pin17={gpio_level} | Status={sensor_status:>9} | PPS={pulses_recent:>2} | "
+                              f"Speed={self.actual_speed:>5.1f}km/h | Target={target:>5.1f} | Limits=[{lower:>4.1f}-{upper:>4.1f}] | {compliance} | "
+                              f"Violations={self.violations} | Timer={self.violation_timer:.3f}s")
+                    
+                    # Enhanced debug output for NPN sensor (only when significant changes occur)
                     if self.debug:
                         if abs(self.actual_speed - prev_speed) > 0.5:
-                            sensor_status = "ACTIVE" if hasattr(self, 'gpio_active') and self.gpio_active else "IDLE"
-                            print(f"[NPN-SENSOR] Real-time speed: {self.actual_speed:.1f} km/h (change: {self.actual_speed - prev_speed:+.1f}) - Sensor: {sensor_status}")
+                            print(f"[NPN-SENSOR] Speed change detected: {prev_speed:.1f} -> {self.actual_speed:.1f} km/h (Δ{self.actual_speed - prev_speed:+.1f})")
                         
-                        # Periodic sensor status (every 3 seconds for real-time monitoring)
-                        if not hasattr(self, '_last_sensor_log') or time.monotonic() - self._last_sensor_log > 3.0:
+                        # Periodic detailed sensor status (every 5 seconds for comprehensive monitoring)
+                        if not hasattr(self, '_last_sensor_log') or time.monotonic() - self._last_sensor_log > 5.0:
                             self._last_sensor_log = time.monotonic()
-                            pulses_recent = self.pulse_counter.count_recent(1.0)
-                            gpio_level = "HIGH" if getattr(self, 'last_gpio_state', True) else "LOW"
-                            print(f"[NPN-SENSOR] Pin17 Status: {pulses_recent} pulses/sec, GPIO: {gpio_level}, Speed: {self.actual_speed:.1f} km/h")
+                            total_pulses = len(self.pulse_counter.deque) if hasattr(self.pulse_counter, 'deque') else 0
+                            print(f"[DEBUG] NPN Sensor Details: GPIO{self.gpio_pin}={gpio_level}, Pulses/sec={pulses_recent}, "
+                                  f"Total pulses={total_pulses}, Circumference={self.circ}m, Speed={self.actual_speed:.2f} km/h")
                         
                 else:
                     # GPIO not available - show error and use zero speed
@@ -436,16 +482,31 @@ class DriveBackend:
                         crossed_flag = True
                         self.violation_timer = 0.0  # Reset timer after counting
                         
-                        if self.debug:
-                            violation_type = "ABOVE LIMIT (TOO FAST)" if cross_side == "upper" else "BELOW LIMIT (TOO SLOW)"
-                            print(f"[CMVR] VIOLATION #{self.violations} at {self.elapsed:.2f}s - {violation_type} (sustained 0.20s) speed={self.actual_speed:.1f} limit={lower:.1f}-{upper:.1f}")
-                    elif self.debug and self.violation_timer > 0:
-                        print(f"[TIMER] Violation building: {self.violation_timer:.3f}s/{self.cmvr_threshold}s (speed={self.actual_speed:.1f})")
+                        # ALWAYS show violations in terminal (not just debug mode)
+                        violation_type = "ABOVE LIMIT (TOO FAST)" if cross_side == "upper" else "BELOW LIMIT (TOO SLOW)"
+                        timestamp = time.strftime("%H:%M:%S")
+                        print(f"")
+                        print(f"🚨 [{timestamp}] VIOLATION #{self.violations} DETECTED! 🚨")
+                        print(f"   Type: {violation_type}")
+                        print(f"   Time: {self.elapsed:.2f}s (sustained for {self.cmvr_threshold}s)")
+                        print(f"   Speed: {self.actual_speed:.1f} km/h | Limit: {lower:.1f}-{upper:.1f} km/h")
+                        print(f"   Exceeded by: {abs(self.actual_speed - (upper if cross_side == 'upper' else lower)):.1f} km/h")
+                        print(f"")
+                        
+                    elif self.violation_timer > 0:
+                        # Show violation timer building up (every 0.05s for real-time feedback)
+                        if not hasattr(self, '_last_timer_display') or time.monotonic() - self._last_timer_display > 0.05:
+                            self._last_timer_display = time.monotonic()
+                            progress_bar = "█" * int(self.violation_timer / self.cmvr_threshold * 20)
+                            remaining_bar = "░" * (20 - len(progress_bar))
+                            violation_type = "TOO FAST" if cross_side == "upper" else "TOO SLOW"
+                            print(f"⚠️  VIOLATION BUILDING: [{progress_bar}{remaining_bar}] {self.violation_timer:.3f}s/{self.cmvr_threshold}s - {violation_type} ({self.actual_speed:.1f} km/h)")
                         
                 else:  # Speed is within valid range
                     # Reset violation timer when speed returns to compliant range
-                    if self.violation_timer > 0 and self.debug:
-                        print(f"[CMVR] Speed compliant - timer reset (was {self.violation_timer:.3f}s)")
+                    if self.violation_timer > 0:
+                        timestamp = time.strftime("%H:%M:%S")
+                        print(f"✅ [{timestamp}] Speed returned to compliant range - timer reset (was {self.violation_timer:.3f}s)")
                     self.violation_timer = 0.0
                 
                 # Update state for next iteration
@@ -516,6 +577,13 @@ async def main(profile_path, host='0.0.0.0', port=PORT, tol=DEFAULT_TOL, rebase=
         print(f"[GPIO] NPN SENSOR MODE ENABLED - Pin {backend.gpio_pin} ready for pulse detection")
         print(f"[GPIO] Wheel circumference: {backend.circ}m, Pulses per revolution: {backend.ppr}")
         print(f"[GPIO] Sensor wiring: Red->12V, Black->GND, Green->GPIO{backend.gpio_pin}")
+        print(f"")
+        print(f"📡 REAL-TIME SENSOR MONITORING ACTIVE")
+        print(f"   Terminal will display live sensor values when test is running")
+        print(f"   Format: [TIME] SENSOR: Pin17=STATE | Status=DETECTING/IDLE | PPS=X | Speed=X.Xkm/h | Target=X.X | Limits=[X.X-X.X] | COMPLIANT/VIOLATION")
+        print(f"   Violations will be highlighted with 🚨 alerts")
+        print(f"   Press Ctrl+C to stop")
+        print(f"")
     else:
         print("[ERROR] GPIO REQUIRED! This system requires NPN sensor input.")
         print("[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug")
