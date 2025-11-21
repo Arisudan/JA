@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-900">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Hero Drive Cycle</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/1.4.0/chartjs-plugin-annotation.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { background: #061018; color: #dfe9f3; font-family: Arial, sans-serif; margin: 0; padding: 8px; height: 100vh; overflow: hidden; }
+        .card { background: #0c1620; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); border: 1px solid #1f2937; }
+        .big-text { font-size: 100px; font-weight: 900; line-height: 1; text-align: center; }
+        
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        .status-active { color: #4ade80; animation: pulse 1s infinite; }
+        
+        .btn { padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 6px; transition: 0.2s; }
+        .btn:active { transform: scale(0.98); }
+        
+        .dropdown-content { display: none; position: absolute; right: 0; bottom: 100%; margin-bottom: 5px; background-color: #1a2a3a; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 4px; border: 1px solid #374151; }
+        .dropdown-content button { color: #dfe9f3; padding: 12px 16px; text-decoration: none; display: block; width: 100%; text-align: left; background: none; }
+        .dropdown-content button:hover { background-color: #2d3748; }
+        .show { display: block; }
+    </style>
+</head>
+<body class="flex flex-col gap-3 h-full">
+
+    <!-- TOP SECTION -->
+    <div class="flex gap-3 h-[40%]">
+        <div class="card flex-1 flex items-center justify-around px-4">
+            <div class="flex flex-col items-center">
+                <div class="text-xs text-gray-400 mb-1">ACTUAL</div>
+                <div id="actual" class="big-text text-green-400">0.0</div>
+                <div class="text-xs text-gray-500">km/h</div>
+            </div>
+            <div class="h-32 w-px bg-gray-700"></div>
+            <div class="flex flex-col items-center">
+                <div class="text-xs text-gray-400 mb-1">TARGET</div>
+                <div id="target" class="big-text text-white">0.0</div>
+                <div class="text-xs text-gray-500">km/h</div>
+            </div>
+            <div class="h-32 w-px bg-gray-700"></div>
+            <div class="flex flex-col gap-6">
+                <div class="flex flex-col items-center min-w-[100px]">
+                    <div class="text-xs text-gray-400">ELAPSED</div>
+                    <div id="time" class="text-4xl font-bold text-white my-1">0.00</div>
+                    <div class="text-[10px] text-gray-500">seconds</div>
+                </div>
+                <div class="flex flex-col items-center min-w-[100px]">
+                    <div class="text-xs text-gray-400">VIOLATIONS</div>
+                    <div id="viol" class="text-4xl font-bold text-[#ff6b6b] bg-[#2a1010] px-4 py-1 rounded my-1">0</div>
+                    <div class="text-[10px] text-gray-500">count</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card w-[30%] flex flex-col justify-between p-4">
+            <div class="flex justify-between items-start">
+                <div>
+                    <div class="flex items-center gap-2 mb-1">
+                        <div id="wsDot" class="w-3 h-3 rounded-full bg-red-500"></div>
+                        <h1 class="text-sm font-bold text-gray-300">SYSTEM STATUS</h1>
+                    </div>
+                    <div class="text-[10px] text-gray-500">HERO MOTO CORP</div>
+                </div>
+                <div class="text-right">
+                    <div class="text-[10px] text-gray-400">SENSOR</div>
+                    <div id="sensorText" class="text-xs font-bold text-gray-500">IDLE</div>
+                    <div id="pinText" class="text-[10px] font-mono text-gray-600">PIN 17: HIGH</div>
+                </div>
+            </div>
+
+            <div class="flex items-center justify-between bg-gray-900 p-2 rounded border border-gray-800">
+                <span class="text-xs text-gray-400">GRAPH WINDOW</span>
+                <div class="flex items-center gap-2">
+                    <input id="window" type="number" min="5" max="300" value="20" class="w-12 bg-gray-800 text-white text-center border border-gray-600 rounded text-sm">
+                    <span class="text-[10px] text-gray-500">sec</span>
+                </div>
+            </div>
+
+            <div class="flex gap-2 mt-2">
+                <button id="startBtn" class="btn bg-green-600 text-white flex-1">START</button>
+                <button id="stopBtn" class="btn bg-yellow-600 text-white w-20">STOP</button>
+            </div>
+            
+            <div class="flex gap-2">
+                <button id="resetBtn" class="btn bg-gray-600 text-white flex-1">RESET</button>
+                <div class="relative">
+                    <button id="dlBtn" class="btn bg-blue-600 text-white w-32 flex items-center justify-center gap-2">
+                        <span>📥</span> EXCEL
+                    </button>
+                    <div id="dlMenu" class="dropdown-content">
+                        <button id="toExcel">📊 Excel (.xlsx)</button>
+                        <button id="toCsv">📄 CSV (.csv)</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHART SECTION -->
+    <div id="chartWrap" class="card flex-1 relative p-2 min-h-0">
+        <canvas id="chart"></canvas>
+    </div>
+
+<script>
+    const WS_URL = "ws://localhost:8765";
+    let ws, chart;
+    let driveData = [], singlePoint = [], violationMarkers = [];
+    let windowSeconds = 20;
+    let pendingDlType = null;
+
+    const ui = {
+        act: document.getElementById('actual'),
+        tgt: document.getElementById('target'),
+        tm: document.getElementById('time'),
+        vio: document.getElementById('viol'),
+        wsDot: document.getElementById('wsDot'),
+        sen: document.getElementById('sensorText'),
+        pin: document.getElementById('pinText'),
+        dlMenu: document.getElementById('dlMenu')
+    };
+
+    function initChart(targets) {
+        const ctx = document.getElementById('chart').getContext('2d');
+        const labels = targets.map((_, i) => i);
+        const upper = targets.map(v => v + 2);
+        const lower = targets.map(v => Math.max(0, v - 2));
+        
+        singlePoint = new Array(targets.length).fill(null);
+        violationMarkers = [];
+
+        if(chart) chart.destroy();
+
+        chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'Upper', data: upper, borderColor: '#ef4444', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Lower', data: lower, borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(20, 30, 40, 0.5)', tension: 0.1 },
+                    { label: 'Target', data: targets, borderColor: '#40e37a', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.1 },
+                    // REMOVED YELLOW LINE DATASET
+                    { label: 'Rider', data: singlePoint, pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: '#fbbf24', showLine: false },
+                    { label: 'Viol', data: violationMarkers, type: 'scatter', pointStyle: 'crossRot', pointRadius: 8, pointBorderColor: 'red', showLine: false }
+                ]
+            },
+            options: {
+                responsive: true, 
+                maintainAspectRatio: false, 
+                animation: { duration: 100, easing: 'linear' }, 
+                scales: {
+                    x: { min: 0, max: windowSeconds, grid: {display: false}, ticks: {color: '#9ca3af', font:{size:12}} },
+                    y: { min: 0, max: 60, grid: {display: false}, ticks: {color: '#9ca3af', font:{size:14, weight:'bold'}} }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
+    }
+
+    function connect() {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = () => {
+            ui.wsDot.classList.replace('bg-red-500', 'bg-green-500');
+            setInterval(() => ws.send(JSON.stringify({cmd: "sensor_status"})), 500);
+        };
+        ws.onmessage = (e) => {
+            const m = JSON.parse(e.data);
+            if (m.type === "profile") {
+                driveData = m.profile.target;
+                initChart(driveData);
+            } else if (m.type === "update") {
+                updateDisplay(m);
+            } else if (m.type === "violation") {
+                if(chart) { violationMarkers.push({x: m.time, y: m.actual}); chart.update('none'); }
+            } else if (m.type === "csv_download") {
+                if (pendingDlType === 'excel') dlExcel(m.content, m.meta);
+                else dlCsv(m.content, m.meta);
+            } else if (m.type === "sensor_status") {
+                ui.sen.innerText = m.sensor_active ? "ACTIVE" : "IDLE";
+                ui.sen.className = m.sensor_active ? "text-xs font-bold text-green-400 status-active" : "text-xs font-bold text-gray-500";
+                ui.pin.innerText = `PIN ${m.gpio_pin}: ${m.gpio_level}`;
+            } else if (m.type === "reset") {
+                resetDisplay();
+            }
+        };
+        ws.onclose = () => {
+            ui.wsDot.classList.replace('bg-green-500', 'bg-red-500');
+            setTimeout(connect, 1000);
+        };
+    }
+
+    function updateDisplay(d) {
+        ui.act.innerText = d.actual.toFixed(1);
+        ui.tgt.innerText = d.target.toFixed(1);
+        ui.tm.innerText = d.time.toFixed(1);
+        ui.vio.innerText = d.violations;
+
+        if(d.time > 5 && (d.actual > d.upper || d.actual < d.lower)) ui.act.className = "big-text text-red-500";
+        else ui.act.className = "big-text text-green-400";
+
+        if(chart) {
+            const idx = Math.floor(d.time);
+            if(idx < driveData.length) {
+                // Update ONLY the Triangle Position
+                singlePoint.fill(null); 
+                singlePoint[idx] = d.actual;
+                
+                let minX = Math.max(0, d.time - (windowSeconds * 0.8));
+                chart.options.scales.x.min = minX;
+                chart.options.scales.x.max = minX + windowSeconds;
+                
+                chart.update('none');
+            }
+        }
+        
+        if(d.running) {
+            document.getElementById('startBtn').innerText = "PAUSE";
+            document.getElementById('startBtn').className = "btn bg-yellow-600 text-white flex-1";
+        } else {
+            document.getElementById('startBtn').innerText = "START";
+            document.getElementById('startBtn').className = "btn bg-green-600 text-white flex-1";
+        }
+    }
+
+    function resetDisplay() {
+        if(chart) {
+            singlePoint.fill(null); violationMarkers = [];
+            chart.options.scales.x.min = 0; chart.options.scales.x.max = windowSeconds;
+            chart.update();
+        }
+        ui.act.innerText = "0.0"; ui.tm.innerText = "0.0"; ui.vio.innerText = "0";
+    }
+
+    function reqDl(type) {
+        pendingDlType = type;
+        ws.send(JSON.stringify({cmd: "download_log"}));
+        document.getElementById('dlMenu').classList.remove('show');
+    }
+
+    function dlExcel(csv, meta) {
+        if(!csv) return alert("No data");
+        const rows = csv.trim().split('\n').map(r => r.split(','));
+        const final = [["Hero Drive Cycle Report"], ["Start:", meta.start], ["End:", meta.end], [], ...rows];
+        const ws = XLSX.utils.aoa_to_sheet(final);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "Run Data");
+        XLSX.writeFile(wb, `Run_${Date.now()}.xlsx`);
+    }
+
+    function dlCsv(csv, meta) {
+        if(!csv) return alert("No data");
+        const blob = new Blob([`# Start: ${meta.start}\n# End: ${meta.end}\n${csv}`], {type: 'text/csv'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `Run_${Date.now()}.csv`;
+        a.click();
+    }
+
+    document.getElementById('startBtn').onclick = () => ws.send(JSON.stringify({cmd: "start"}));
+    document.getElementById('stopBtn').onclick = () => ws.send(JSON.stringify({cmd: "stop"}));
+    document.getElementById('resetBtn').onclick = () => ws.send(JSON.stringify({cmd: "reset"}));
+    document.getElementById('dlBtn').onclick = (e) => { e.stopPropagation(); document.getElementById('dlMenu').classList.toggle('show'); };
+    window.onclick = () => document.getElementById('dlMenu').classList.remove('show');
+    document.getElementById('toExcel').onclick = () => reqDl('excel');
+    document.getElementById('toCsv').onclick = () => reqDl('csv');
+    
+    document.getElementById('window').onchange = (e) => {
+        windowSeconds = Number(e.target.value);
+        if(chart) { chart.options.scales.x.max = chart.options.scales.x.min + windowSeconds; chart.update('none'); }
+    };
+
+    connect();
+</script>
+</body>
+</html>
