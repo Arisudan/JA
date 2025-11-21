@@ -1,6 +1,9 @@
 sudo /home/psg/project/myenv/bin/python3 backend.py --profile drive_cycles.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
 
 
+sudo cp /etc/udev/rules.d/99-com.rules /etc/udev/rules.d/99-gpio.rules
+
+
 
 
 
