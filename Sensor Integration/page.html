@@ -28,9 +28,9 @@
   <div class="row">
     <div class="card" style="display:flex;gap:18px;align-items:center">
       <div><div class="small">ACTUAL</div><div id="actual" class="big">0.0</div><div class="small">km/h</div></div>
-      <div><div class="small">TARGET</div><div id="target" class="big">0.0</div></div>
-      <div><div class="small">ELAPSED</div><div id="time" style="font-size:20px">0.00</div></div>
-      <div><div class="small">VIOLATIONS</div><div id="viol" style="font-size:24px;font-weight:bold;color:#ff6b6b;background:#2a1010;padding:4px 8px;border-radius:4px;min-width:40px;text-align:center">0</div></div>
+      <div><div class="small">TARGET</div><div id="target" class="big">0.0</div><div class="small">km/h</div></div>
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:80px"><div class="small">ELAPSED</div><div id="time" style="font-size:24px;font-weight:bold;text-align:center;padding:4px 8px;min-height:32px;display:flex;align-items:center;justify-content:center">0.00</div><div class="small">seconds</div></div>
+      <div style="display:flex;flex-direction:column;align-items:center;min-width:80px"><div class="small">VIOLATIONS</div><div id="viol" style="font-size:24px;font-weight:bold;color:#ff6b6b;background:#2a1010;padding:4px 8px;border-radius:4px;text-align:center;min-height:32px;display:flex;align-items:center;justify-content:center">0</div><div class="small">count</div></div>
     </div>
 
     <div class="card" style="flex:1;min-width:580px;display:flex;justify-content:space-between;align-items:center" id="controls">
@@ -44,7 +44,7 @@
       <!-- Right side controls -->
       <div style="display:flex;gap:16px;align-items:center">
         <label><div class="small">MODE</div>
-          <select id="mode"><option value="manual">Manual</option><option value="real">Real</option></select>
+          <select id="mode" style="padding:8px 12px;font-size:16px;font-weight:bold;border-radius:6px;border:2px solid #4CAF50;background:#0c1620;color:#dfe9f3;min-width:100px;cursor:pointer"><option value="manual">Manual</option><option value="real">Real</option></select>
         </label>
 
         <label><div class="small">MANUAL SPEED</div>
@@ -115,13 +115,19 @@ function handleMsg(obj) {
     document.getElementById('target').innerText = (obj.target ?? 0).toFixed(1);
     document.getElementById('time').innerText = (obj.time ?? 0).toFixed(2);
     
-    // In real mode, show the actual sensor speed in real-time
+    // Update mode-specific indicators
     const currentMode = document.getElementById('mode').value;
     if (currentMode === 'real' && obj.actual !== undefined) {
       // Update real mode indicator with current sensor speed
       const realModeIndicator = document.getElementById('realModeIndicator');
       if (realModeIndicator.style.display !== 'none') {
         realModeIndicator.innerText = `Sensor: ${obj.actual.toFixed(1)} km/h`;
+      }
+    } else if (currentMode === 'manual') {
+      // Ensure manual mode display is working
+      const sliderVal = document.getElementById('sliderVal');
+      if (sliderVal.style.display === 'none') {
+        sliderVal.style.display = 'block';
       }
     }
     
@@ -204,6 +210,11 @@ function drawProfile(){
     options: {
       animation:false,
       maintainAspectRatio:false,
+      layout: {
+        padding: {
+          bottom: 25  // Add space below the x-axis for better UI appearance
+        }
+      },
       scales: {
         x: { 
           type:'linear', 
@@ -237,16 +248,26 @@ function drawProfile(){
 }
 
 function addPoint(t, actual){
-  if (!chart || t===null || t===undefined) return;
+  if (!chart || t===null || t===undefined || actual===null || actual===undefined) return;
+  
+  // Add point to chart regardless of mode
   chart.data.datasets[3].data.push({x:t, y:actual});
-  // prune
+  
+  // prune old data to keep performance good
   const keepMin = t - (windowSeconds + 10);
-  chart.data.datasets.forEach(ds => ds.data = ds.data.filter(p => p.x >= keepMin || typeof p.x !== 'number'));
-  // auto scroll with lead
+  chart.data.datasets.forEach(ds => {
+    if (ds.data && Array.isArray(ds.data)) {
+      ds.data = ds.data.filter(p => p.x >= keepMin || typeof p.x !== 'number');
+    }
+  });
+  
+  // auto scroll with lead - ensure chart is always visible
   let vmin = Math.max(0, t - (windowSeconds * leadPct));
   let vmax = vmin + windowSeconds;
   chart.options.scales.x.min = vmin;
   chart.options.scales.x.max = vmax;
+  
+  // Force chart update to ensure visibility in both modes
   chart.update('none');
 }
 
@@ -303,17 +324,37 @@ document.getElementById('resetBtn').onclick = ()=> {
   document.getElementById('viol').innerText = "0";
   document.getElementById('viol').setAttribute('data-last', '0');
   
-  // Only reset slider if in manual mode
+  // Reset controls based on current mode
   const currentMode = document.getElementById('mode').value;
   if (currentMode === 'manual') {
+    // Reset manual controls
     document.getElementById('slider').value = 0;
     document.getElementById('sliderVal').innerText = "0.0 km/h";
+    // Send reset speed to backend
+    sendCmd({cmd:'manual_speed', speed: 0});
   } else {
     // Reset real mode indicator
     const realModeIndicator = document.getElementById('realModeIndicator');
     if (realModeIndicator.style.display !== 'none') {
       realModeIndicator.innerText = "Real Sensor Active";
     }
+  }
+  
+  // Ensure UI elements are in correct state for current mode
+  const slider = document.getElementById('slider');
+  const sliderVal = document.getElementById('sliderVal');
+  const realModeIndicator = document.getElementById('realModeIndicator');
+  
+  if (currentMode === 'manual') {
+    slider.disabled = false;
+    slider.style.opacity = '1';
+    sliderVal.style.display = 'block';
+    realModeIndicator.style.display = 'none';
+  } else {
+    slider.disabled = true;
+    slider.style.opacity = '0.3';
+    sliderVal.style.display = 'none';
+    realModeIndicator.style.display = 'block';
   }
 };
 document.getElementById('mode').onchange = (e)=> {
@@ -338,7 +379,11 @@ document.getElementById('mode').onchange = (e)=> {
     slider.style.opacity = '1';
     sliderVal.style.display = 'block';
     realModeIndicator.style.display = 'none';
-    console.log('[MODE] Switched to MANUAL mode - slider controls enabled');
+    
+    // Re-send current manual speed to ensure backend uses manual mode
+    const currentSpeed = parseFloat(slider.value);
+    sendCmd({cmd:'manual_speed', speed: currentSpeed});
+    console.log(`[MODE] Switched to MANUAL mode - slider controls enabled, speed set to ${currentSpeed.toFixed(1)} km/h`);
   }
 };
 const slider = document.getElementById('slider');
