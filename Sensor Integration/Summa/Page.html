@@ -61,11 +61,6 @@
         </div>
 
         <div style="display:flex;flex-direction:column;align-items:center;min-width:120px">
-          <div class="small">PULSE RATE</div>
-          <div id="pulseRate" style="font-size:18px;font-weight:bold;color:#ffd400;text-align:center;padding:4px 8px;background:#2a2010;border-radius:4px;min-width:100px">0 PPS</div>
-        </div>
-
-        <div style="display:flex;flex-direction:column;align-items:center;min-width:120px">
           <div class="small">GPIO PIN</div>
           <div id="gpioPin" style="font-size:16px;font-weight:bold;color:#40e37a;text-align:center;padding:4px 8px;background:#1a2a1a;border-radius:4px;min-width:100px">Pin 17</div>
         </div>
@@ -109,7 +104,7 @@
   </div>
 
 <script>
-const WS_URL = "ws://localhost:8766";
+const WS_URL = "ws://localhost:8765";
 let ws = null;
 let profile = {time:[], target:[], upper:[], lower:[]};
 let chart = null;
@@ -144,21 +139,14 @@ function handleMsg(obj) {
     // Update sensor status display
     if (obj.actual !== undefined) {
       const sensorStatus = document.getElementById('sensorStatus');
-      const pulseRate = document.getElementById('pulseRate');
       
       // Update sensor status based on speed
       const isActive = obj.actual > 0.1;
       const statusText = isActive ? "ACTIVE" : "IDLE";
       const statusColor = isActive ? "#40e37a" : "#9fb0c9";
       
-      // Estimate pulse rate from speed (approximate)
-      const estimatedPPS = Math.round((obj.actual / 3.6) / 1.94); // Convert km/h to estimated pulses per second
-      
       sensorStatus.innerHTML = `NPN Sensor ${statusText}<br>Pin 17: ${isActive ? 'LOW' : 'HIGH'}<br>Speed: ${obj.actual.toFixed(1)} km/h`;
       sensorStatus.style.color = statusColor;
-      
-      pulseRate.innerText = `${estimatedPPS} PPS`;
-      pulseRate.style.color = isActive ? "#ffd400" : "#9fb0c9";
     }
     
     // Update violation count (backend uses CMVR/AIS 0.20s rule internally)
@@ -213,14 +201,10 @@ function handleMsg(obj) {
     // Reset sensor displays
     document.getElementById('sensorStatus').innerHTML = 'NPN Sensor IDLE<br>Pin 17: HIGH<br>Speed: 0.0 km/h';
     document.getElementById('sensorStatus').style.color = '#9fb0c9';
-    document.getElementById('pulseRate').innerText = '0 PPS';
-    document.getElementById('pulseRate').style.color = '#9fb0c9';
   } else if (obj.type === 'sensor_status') {
     // Handle real-time sensor status updates (like your GPIO LED status)
     const sensorStatus = document.getElementById('sensorStatus');
-    const pulseRate = document.getElementById('pulseRate');
     const gpioPin = document.getElementById('gpioPin');
-    const lastUpdate = document.getElementById('lastUpdate');
     
     const statusText = obj.sensor_active ? "DETECTING" : "IDLE";  
     const statusColor = obj.sensor_active ? "#40e37a" : "#9fb0c9";
@@ -230,14 +214,6 @@ function handleMsg(obj) {
     sensorStatus.innerHTML = `NPN Sensor ${statusText}<br>Pin ${obj.gpio_pin}: ${obj.gpio_level}<br>Speed: ${obj.current_speed} km/h`;
     sensorStatus.style.color = statusColor;
     sensorStatus.style.background = obj.sensor_active ? "#1a2a1a" : "#2a1a1a";
-    
-    // Update pulse rate with animation when active
-    pulseRate.innerText = `${obj.pulses_per_second} PPS`;
-    pulseRate.style.color = obj.sensor_active ? "#ffd400" : "#9fb0c9";
-    if (obj.sensor_active) {
-      pulseRate.style.animation = "pulse 0.5s ease-in-out";
-      setTimeout(() => pulseRate.style.animation = "", 500);
-    }
     
     // Update GPIO pin status with color coding
     gpioPin.innerText = `Pin ${obj.gpio_pin}`;
