@@ -9,94 +9,118 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-annotation/1.4.0/chartjs-plugin-annotation.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
-        body { background: #061018; color: #dfe9f3; font-family: sans-serif; overflow: hidden; height: 100vh; width: 100vw; margin: 0; padding: 4px; }
+        body { background: #061018; color: #dfe9f3; font-family: Arial, sans-serif; margin: 0; padding: 8px; height: 100vh; overflow: hidden; }
+        .card { background: #0c1620; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.6); border: 1px solid #1f2937; }
         
-        /* 1024x600 Grid Layout */
-        .main-grid {
-            display: grid;
-            grid-template-rows: 40px 110px 1fr 50px; /* Header, Stats, Chart, Controls */
-            gap: 8px;
-            height: 100%;
-        }
-
-        .card { background: #0c1620; border-radius: 6px; border: 1px solid #1f2937; position: relative; }
+        /* Your Requested Big Font Style */
+        .big-text { font-size: 100px; font-weight: 900; line-height: 1; text-align: center; }
         
-        .btn { font-weight: bold; border-radius: 4px; transition: 0.1s; font-size: 14px; height: 100%; }
-        .btn:active { transform: scale(0.98); }
-        
-        /* Sensor Animation */
+        /* Animations */
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
         .status-active { color: #4ade80; animation: pulse 1s infinite; }
+        
+        /* Compact Button */
+        .btn { padding: 12px 20px; font-size: 16px; font-weight: bold; border-radius: 6px; transition: 0.2s; }
+        .btn:active { transform: scale(0.98); }
+        
+        /* Dropdown */
+        .dropdown-content { display: none; position: absolute; right: 0; bottom: 100%; margin-bottom: 5px; background-color: #1a2a3a; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 4px; border: 1px solid #374151; }
+        .dropdown-content button { color: #dfe9f3; padding: 12px 16px; text-decoration: none; display: block; width: 100%; text-align: left; background: none; }
+        .dropdown-content button:hover { background-color: #2d3748; }
+        .show { display: block; }
     </style>
 </head>
-<body>
+<body class="flex flex-col gap-3 h-full">
 
-    <div class="main-grid">
+    <!-- TOP SECTION: Stats & Controls (40% Height) -->
+    <div class="flex gap-3 h-[40%]">
         
-        <!-- ROW 1: Header (40px) -->
-        <div class="flex justify-between items-center px-4">
-            <div class="flex items-center gap-2">
-                <div id="wsDot" class="w-3 h-3 rounded-full bg-red-500"></div>
-                <h1 class="text-md font-bold text-white tracking-wider">HERO DRIVE CYCLE</h1>
-            </div>
-            <!-- Sensor Status -->
-            <div class="flex items-center gap-4 bg-gray-800 px-2 rounded border border-gray-700 h-8">
-                <div class="text-[10px] text-gray-400">SENSOR: <span id="sensorText" class="font-bold text-gray-500">IDLE</span></div>
-                <div class="w-px h-4 bg-gray-600"></div>
-                <div class="text-[10px] text-gray-400">PIN 17: <span id="pinText" class="font-mono text-gray-500">HIGH</span></div>
-            </div>
-        </div>
-
-        <!-- ROW 2: Stats (110px) -->
-        <div class="grid grid-cols-4 gap-2">
+        <!-- Stats Card -->
+        <div class="card flex-1 flex items-center justify-around px-4">
             <!-- Actual Speed -->
-            <div class="card flex flex-col justify-center items-center">
-                <div class="text-[10px] text-gray-400 absolute top-1 left-2">ACTUAL</div>
-                <div id="actual" class="text-6xl font-black text-green-400 leading-none">0.0</div>
-                <div class="text-[10px] text-gray-500">km/h</div>
+            <div class="flex flex-col items-center">
+                <div class="text-xs text-gray-400 mb-1">ACTUAL</div>
+                <div id="actual" class="big-text text-green-400">0.0</div>
+                <div class="text-xs text-gray-500">km/h</div>
             </div>
-            <!-- Target Speed -->
-            <div class="card flex flex-col justify-center items-center">
-                <div class="text-[10px] text-gray-400 absolute top-1 left-2">TARGET</div>
-                <div id="target" class="text-6xl font-black text-white leading-none">0.0</div>
-                <div class="text-[10px] text-gray-500">km/h</div>
-            </div>
-            <!-- Timer -->
-            <div class="card flex flex-col justify-center items-center">
-                <div class="text-[10px] text-gray-400">TIME</div>
-                <div id="time" class="text-4xl font-bold text-blue-400">0.0</div>
-                <div class="text-[10px] text-gray-500">sec</div>
-            </div>
-            <!-- Violations -->
-            <div class="card flex flex-col justify-center items-center bg-red-900/10 border-red-900/30">
-                <div class="text-[10px] text-red-400">VIOLATIONS</div>
-                <div id="viol" class="text-5xl font-bold text-red-500">0</div>
-            </div>
-        </div>
-
-        <!-- ROW 3: Chart (Fills Remaining Space) -->
-        <div class="card p-1 relative min-h-0">
-            <canvas id="chart"></canvas>
-        </div>
-
-        <!-- ROW 4: Controls (50px) -->
-        <div class="flex gap-2">
-            <button id="startBtn" class="btn bg-green-600 text-white flex-1 text-lg">START TEST</button>
-            <button id="stopBtn" class="btn bg-yellow-600 text-white w-32">STOP</button>
-            <button id="resetBtn" class="btn bg-gray-600 text-white w-24">RESET</button>
             
-            <!-- Simple Dropdown for Export -->
-            <div class="relative h-full">
-                <button id="dlBtn" class="btn bg-blue-600 text-white w-32 flex items-center justify-center gap-2">
-                    <span>📥</span> EXCEL
-                </button>
-                <div id="dlMenu" class="hidden absolute bottom-full right-0 mb-2 w-40 bg-gray-800 border border-gray-600 rounded shadow-xl z-50">
-                    <button id="toExcel" class="block w-full text-left px-4 py-3 text-white hover:bg-gray-700">📊 Excel (.xlsx)</button>
-                    <button id="toCsv" class="block w-full text-left px-4 py-3 text-white hover:bg-gray-700">📄 CSV (.csv)</button>
+            <div class="h-32 w-px bg-gray-700"></div>
+            
+            <!-- Target Speed -->
+            <div class="flex flex-col items-center">
+                <div class="text-xs text-gray-400 mb-1">TARGET</div>
+                <div id="target" class="big-text text-white">0.0</div>
+                <div class="text-xs text-gray-500">km/h</div>
+            </div>
+            
+            <div class="h-32 w-px bg-gray-700"></div>
+            
+            <!-- Time & Violations -->
+            <div class="flex flex-col gap-6">
+                <div class="flex flex-col items-center min-w-[100px]">
+                    <div class="text-xs text-gray-400">ELAPSED</div>
+                    <div id="time" class="text-4xl font-bold text-white my-1">0.00</div>
+                    <div class="text-[10px] text-gray-500">seconds</div>
+                </div>
+                <div class="flex flex-col items-center min-w-[100px]">
+                    <div class="text-xs text-gray-400">VIOLATIONS</div>
+                    <div id="viol" class="text-4xl font-bold text-[#ff6b6b] bg-[#2a1010] px-4 py-1 rounded my-1">0</div>
+                    <div class="text-[10px] text-gray-500">count</div>
                 </div>
             </div>
         </div>
 
+        <!-- Right Control Panel -->
+        <div class="card w-[30%] flex flex-col justify-between p-4">
+            <!-- Header Info -->
+            <div class="flex justify-between items-start">
+                <div>
+                    <div class="flex items-center gap-2 mb-1">
+                        <div id="wsDot" class="w-3 h-3 rounded-full bg-red-500"></div>
+                        <h1 class="text-sm font-bold text-gray-300">SYSTEM STATUS</h1>
+                    </div>
+                    <div class="text-[10px] text-gray-500">HERO MOTO CORP</div>
+                </div>
+                <div class="text-right">
+                    <div class="text-[10px] text-gray-400">SENSOR</div>
+                    <div id="sensorText" class="text-xs font-bold text-gray-500">IDLE</div>
+                    <div id="pinText" class="text-[10px] font-mono text-gray-600">PIN 17: HIGH</div>
+                </div>
+            </div>
+
+            <!-- Window Setting -->
+            <div class="flex items-center justify-between bg-gray-900 p-2 rounded border border-gray-800">
+                <span class="text-xs text-gray-400">GRAPH WINDOW</span>
+                <div class="flex items-center gap-2">
+                    <input id="window" type="number" min="5" max="300" value="20" class="w-12 bg-gray-800 text-white text-center border border-gray-600 rounded text-sm">
+                    <span class="text-[10px] text-gray-500">sec</span>
+                </div>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex gap-2 mt-2">
+                <button id="startBtn" class="btn bg-green-600 text-white flex-1">START</button>
+                <button id="stopBtn" class="btn bg-yellow-600 text-white w-20">STOP</button>
+            </div>
+            
+            <div class="flex gap-2">
+                <button id="resetBtn" class="btn bg-gray-600 text-white flex-1">RESET</button>
+                <div class="relative">
+                    <button id="dlBtn" class="btn bg-blue-600 text-white w-32 flex items-center justify-center gap-2">
+                        <span>📥</span> EXCEL
+                    </button>
+                    <div id="dlMenu" class="dropdown-content">
+                        <button id="toExcel">📊 Excel (.xlsx)</button>
+                        <button id="toCsv">📄 CSV (.csv)</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BOTTOM SECTION: Chart (60% Height) -->
+    <div id="chartWrap" class="card flex-1 relative p-2 min-h-0">
+        <canvas id="chart"></canvas>
     </div>
 
 <script>
@@ -135,12 +159,12 @@
             data: {
                 labels: labels,
                 datasets: [
-                    { label: 'Upper', data: upper, borderColor: '#ef4444', borderWidth: 1, fill: '+1', backgroundColor: 'rgba(239,68,68,0.1)', pointRadius: 0 },
-                    { label: 'Lower', data: lower, borderColor: '#3b82f6', borderWidth: 1, fill: false, pointRadius: 0 },
-                    { label: 'Target', data: targets, borderColor: '#10b981', borderWidth: 2, pointRadius: 0, borderDash: [0,0] },
-                    { label: 'Actual', data: actualData, borderColor: '#fbbf24', borderWidth: 3, fill: false, pointRadius: 0, tension: 0.4 },
-                    { label: 'Pos', data: singlePoint, pointStyle: 'triangle', pointRadius: 8, pointBackgroundColor: '#fbbf24', showLine: false },
-                    { label: 'Viol', data: violationMarkers, type: 'scatter', pointStyle: 'crossRot', pointRadius: 6, pointBorderColor: 'red', showLine: false }
+                    { label: 'Upper', data: upper, borderColor: '#ef4444', borderWidth: 2, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Lower', data: lower, borderColor: '#3b82f6', borderWidth: 2, pointRadius: 0, fill: '-1', backgroundColor: 'rgba(20, 30, 40, 0.5)', tension: 0.1 },
+                    { label: 'Target', data: targets, borderColor: '#40e37a', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.1 },
+                    { label: 'Actual', data: actualData, borderColor: '#ffd400', borderWidth: 3, pointRadius: 0, fill: false, tension: 0.4 },
+                    { label: 'Pos', data: singlePoint, pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: '#ffd400', showLine: false },
+                    { label: 'Viol', data: violationMarkers, type: 'scatter', pointStyle: 'triangle', pointRadius: 10, pointBackgroundColor: 'red', showLine: false }
                 ]
             },
             options: {
@@ -148,12 +172,12 @@
                 maintainAspectRatio: false, 
                 animation: false,
                 scales: {
-                    x: { min: 0, max: windowSeconds, grid: {color: '#1f2937'}, ticks: {color: '#6b7280', font:{size:10}} },
-                    y: { min: 0, max: 60, grid: {color: '#1f2937'}, ticks: {color: '#6b7280', font:{size:10, weight:'bold'}} }
+                    x: { min: 0, max: windowSeconds, grid: {color: '#1f2937'}, ticks: {color: '#9ca3af', font:{size:12}} },
+                    y: { min: 0, max: 60, grid: {color: '#1f2937'}, ticks: {color: '#9ca3af', font:{size:14, weight:'bold'}} }
                 },
                 plugins: { 
-                    legend: { display: false },
-                    annotation: { annotations: { line: { type: 'line', scaleID: 'x', value: 0, borderColor: 'white', borderWidth: 1, borderDash:[2,2] } } } 
+                    legend: { labels: { color: '#d1d5db', font: {size: 12, weight:'bold'} } },
+                    annotation: { annotations: { line: { type: 'line', scaleID: 'x', value: 0, borderColor: 'white', borderWidth: 1, borderDash:[4,4] } } } 
                 }
             }
         });
@@ -179,7 +203,7 @@
                 else dlCsv(m.content, m.meta);
             } else if (m.type === "sensor_status") {
                 ui.sen.innerText = m.sensor_active ? "ACTIVE" : "IDLE";
-                ui.sen.className = m.sensor_active ? "font-bold text-green-400 status-active" : "font-bold text-gray-500";
+                ui.sen.className = m.sensor_active ? "text-xs font-bold text-green-400 status-active" : "text-xs font-bold text-gray-500";
                 ui.pin.innerText = `PIN ${m.gpio_pin}: ${m.gpio_level}`;
             } else if (m.type === "reset") {
                 resetDisplay();
@@ -197,8 +221,9 @@
         ui.tm.innerText = d.time.toFixed(1);
         ui.vio.innerText = d.violations;
 
-        if(d.time > 5 && (d.actual > d.upper || d.actual < d.lower)) ui.act.classList.replace('text-green-400', 'text-red-500');
-        else ui.act.classList.replace('text-red-500', 'text-green-400');
+        // Color logic
+        if(d.time > 5 && (d.actual > d.upper || d.actual < d.lower)) ui.act.className = "big-text text-red-500";
+        else ui.act.className = "big-text text-green-400";
 
         if(chart) {
             const idx = Math.floor(d.time);
@@ -206,6 +231,7 @@
                 actualData[idx] = d.actual;
                 singlePoint.fill(null); singlePoint[idx] = d.actual;
                 
+                // Scrolling
                 let minX = Math.max(0, d.time - (windowSeconds * 0.8));
                 chart.options.scales.x.min = minX;
                 chart.options.scales.x.max = minX + windowSeconds;
@@ -216,10 +242,10 @@
         
         if(d.running) {
             document.getElementById('startBtn').innerText = "PAUSE";
-            document.getElementById('startBtn').className = "btn bg-yellow-600 text-white flex-1 text-lg";
+            document.getElementById('startBtn').className = "btn bg-yellow-600 text-white flex-1";
         } else {
-            document.getElementById('startBtn').innerText = "START TEST";
-            document.getElementById('startBtn').className = "btn bg-green-600 text-white flex-1 text-lg";
+            document.getElementById('startBtn').innerText = "START";
+            document.getElementById('startBtn').className = "btn bg-green-600 text-white flex-1";
         }
     }
 
@@ -235,7 +261,7 @@
     function reqDl(type) {
         pendingDlType = type;
         ws.send(JSON.stringify({cmd: "download_log"}));
-        document.getElementById('dlMenu').classList.add('hidden');
+        document.getElementById('dlMenu').classList.remove('show');
     }
 
     function dlExcel(csv, meta) {
@@ -245,7 +271,7 @@
         const ws = XLSX.utils.aoa_to_sheet(final);
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "Run Data");
-        XLSX.writeFile(wb, `Run_${Date.now()}.xlsx`);
+        XLSX.writeFile(wb, `Hero_Run_${Date.now()}.xlsx`);
     }
 
     function dlCsv(csv, meta) {
@@ -253,7 +279,7 @@
         const blob = new Blob([`# Start: ${meta.start}\n# End: ${meta.end}\n${csv}`], {type: 'text/csv'});
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `Run_${Date.now()}.csv`;
+        a.download = `Hero_Run_${Date.now()}.csv`;
         a.click();
     }
 
@@ -261,10 +287,15 @@
     document.getElementById('startBtn').onclick = () => ws.send(JSON.stringify({cmd: "start"}));
     document.getElementById('stopBtn').onclick = () => ws.send(JSON.stringify({cmd: "stop"}));
     document.getElementById('resetBtn').onclick = () => ws.send(JSON.stringify({cmd: "reset"}));
-    document.getElementById('dlBtn').onclick = (e) => { e.stopPropagation(); document.getElementById('dlMenu').classList.toggle('hidden'); };
-    window.onclick = () => document.getElementById('dlMenu').classList.add('hidden');
+    document.getElementById('dlBtn').onclick = (e) => { e.stopPropagation(); document.getElementById('dlMenu').classList.toggle('show'); };
+    window.onclick = () => document.getElementById('dlMenu').classList.remove('show');
     document.getElementById('toExcel').onclick = () => reqDl('excel');
     document.getElementById('toCsv').onclick = () => reqDl('csv');
+    
+    document.getElementById('window').onchange = (e) => {
+        windowSeconds = Number(e.target.value);
+        if(chart) { chart.options.scales.x.max = chart.options.scales.x.min + windowSeconds; chart.update('none'); }
+    };
 
     connect();
 </script>
