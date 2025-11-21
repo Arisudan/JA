@@ -1,1 +1,15 @@
 python Backend.py --profile drive_cycles.csv --rebase --debug --use-gpio --simulate-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05
+
+
+
+psg@raspberrypi:~/project $ source myenv/bin/activate
+(myenv) psg@raspberrypi:~/project $ python3 backend.py --profile drive_cycle.csv --rebase --use-gpio --gpio-pin 17 --circ 1.94 --debounce 0.05 --debug
+[GPIO] RPi.GPIO library loaded - Real Raspberry Pi hardware detected
+[MAIN] backend starting with profile: drive_cycle.csv
+[MAIN] rebased by 0s -> new start 0s
+[GPIO] setup failed: Failed to add edge detection
+[MAIN] WebSocket server ws://0.0.0.0:8765  GPIO=OFF
+[ERROR] GPIO REQUIRED! This system requires NPN sensor input.
+[ERROR] Run with: sudo python3 Backend.py --profile drive_cycles.csv --use-gpio --gpio-pin 17 --circ 1.94 --debug
+(myenv) psg@raspberrypi:~/project $ 
+
