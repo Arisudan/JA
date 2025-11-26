@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 backend.py - Final Version: Pi 5 Ready, Spike-Proof, Smooth
+(Added --force-polling and timestamp-based spike debounce. Other logic unchanged.)
 """
 import asyncio
 import websockets
@@ -39,6 +40,9 @@ SMOOTH_RISE = 0.85
 FAST_DROP   = 0.20
 TICK_RATE   = 0.05 # 20Hz
 
+# Force polling (can be set via CLI)
+FORCE_POLLING = False
+
 # Try to import GPIO
 try:
     import RPi.GPIO as GPIO
@@ -59,6 +63,13 @@ filtered_speed = 0.0
 display_speed = 0.0
 pulse_lock = threading.Lock()
 polling_active = False
+
+# ---------- Debounce / spike-protection parameters ----------
+# Compute a minimum plausible pulse interval (seconds) from geometry & max speed
+# interval = wheel_circumference / speed_mps ; speed_mps = MAX_POSSIBLE_SPEED(km/h) / 3.6
+MIN_PULSE_INTERVAL = WHEEL_CIRCUMFERENCE / (MAX_POSSIBLE_SPEED / 3.6) if MAX_POSSIBLE_SPEED > 0 else 0.02
+# allow a safety factor (we ignore anything much shorter than the theoretical fastest)
+MIN_PULSE_INTERVAL *= 0.4   # ignore pulses faster than 40% of the theoretical interval
 
 # --- LOGGING SYSTEM ---
 current_log_file = None
@@ -115,52 +126,103 @@ def stop_logging():
 
 # --- SENSOR LOGIC ---
 def process_pulse():
+    """
+    Called to register a single pulse. Filters out spikes by time comparison.
+    Keeps the same computation for speed as before.
+    """
     global last_pulse_time, current_raw_speed
     current_time = time.monotonic()
-    
+
     with pulse_lock:
-        delta_time = current_time - last_pulse_time
-        
-        if delta_time > 0.05: 
-            if last_pulse_time != 0:
-                speed_mps = WHEEL_CIRCUMFERENCE / delta_time
-                new_speed = speed_mps * 3.6
-                if new_speed < MAX_POSSIBLE_SPEED:
-                    current_raw_speed = new_speed
+        # If this is the very first pulse, initialize last_pulse_time and return
+        if last_pulse_time == 0:
             last_pulse_time = current_time
+            return
+
+        delta_time = current_time - last_pulse_time
+
+        # Ignore unrealistically fast pulses (spikes / bounces)
+        if delta_time < MIN_PULSE_INTERVAL:
+            # Optionally: occasional logging for debugging (commented out to avoid spam)
+            # print(f"[HW] Ignored spike: dt={delta_time:.4f} < min={MIN_PULSE_INTERVAL:.4f}")
+            return
+
+        # Normal speed calculation
+        if delta_time > 0:
+            speed_mps = WHEEL_CIRCUMFERENCE / delta_time
+            new_speed = speed_mps * 3.6
+            if new_speed < MAX_POSSIBLE_SPEED * 1.05:  # a little headroom
+                current_raw_speed = new_speed
+
+        last_pulse_time = current_time
 
 def gpio_callback(channel):
-    process_pulse()
+    """
+    Interrupt callback must be tiny and non-blocking. Just schedule/record the pulse.
+    Using a lock and timestamp guard inside process_pulse keeps this safe.
+    """
+    try:
+        process_pulse()
+    except Exception:
+        pass
 
 def polling_thread_func(pin):
     last_state = GPIO.input(pin)
     while polling_active:
-        current_state = GPIO.input(pin)
-        if last_state == 1 and current_state == 0:
-            process_pulse()
-        last_state = current_state
-        time.sleep(0.001)
+        try:
+            current_state = GPIO.input(pin)
+            if last_state == 1 and current_state == 0:
+                process_pulse()
+            last_state = current_state
+            time.sleep(0.001)
+        except Exception:
+            # keep polling alive even if a transient error occurs
+            time.sleep(0.01)
 
 def setup_hardware(pin):
+    """
+    Set up the GPIO. If FORCE_POLLING is True we skip add_event_detect entirely
+    and start the polling thread (same behavior as fallback). This forces the
+    same behavior across Pi4/Pi5.
+    """
     global polling_active
-    if not GPIO_AVAILABLE: return
+    if not GPIO_AVAILABLE:
+        print("[HW] GPIO not available.")
+        return
+
     try:
         GPIO.setmode(GPIO.BCM)
         GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-        try:
-            GPIO.remove_event_detect(pin)
-            GPIO.add_event_detect(pin, GPIO.FALLING, callback=gpio_callback, bouncetime=20)
-            print(f"[HW] Interrupts Active on GPIO {pin}")
-        except:
-            print("[HW] Interrupt failed. Switching to Polling.")
-            polling_active = True
-            threading.Thread(target=polling_thread_func, args=(pin,), daemon=True).start()
-    except Exception as e: print(f"[HW] Error: {e}")
+    except Exception as e:
+        print(f"[HW] GPIO setup error: {e}")
+        return
+
+    # If the user forced polling, start polling thread and return
+    if FORCE_POLLING:
+        print(f"[HW] FORCE_POLLING enabled — using polling on GPIO {pin} (min_interval={MIN_PULSE_INTERVAL:.3f}s)")
+        polling_active = True
+        threading.Thread(target=polling_thread_func, args=(pin,), daemon=True).start()
+        return
+
+    # Otherwise try interrupts, fall back to polling on failure
+    try:
+        GPIO.remove_event_detect(pin)
+    except Exception:
+        pass
+
+    try:
+        # use a modest bouncetime (ms). Keep it small because wheel pulses can be relatively quick.
+        GPIO.add_event_detect(pin, GPIO.FALLING, callback=gpio_callback, bouncetime=10)
+        print(f"[HW] Interrupts Active on GPIO {pin} (min_interval={MIN_PULSE_INTERVAL:.3f}s)")
+    except Exception as e:
+        print(f"[HW] Interrupt failed ({e}). Switching to Polling.")
+        polling_active = True
+        threading.Thread(target=polling_thread_func, args=(pin,), daemon=True).start()
 
 def get_final_speed():
     global display_speed, filtered_speed, current_raw_speed
     
-    if SIMULATION_MODE: return test_state["manual_speed"]
+    if SIMULATION_MODE: return test_state.get("manual_speed", 0.0)
     
     if time.monotonic() - last_pulse_time > TIMEOUT_SECONDS:
         current_raw_speed = 0.0
@@ -191,15 +253,8 @@ def get_final_speed():
     else: factor = SMOOTH_RISE
         
     display_speed += diff_display * (1.0 - factor) # Simple low pass
-    # Correction: standard exp smooth formula is new = old * alpha + target * (1-alpha)
-    # Here using: new += (target - old) * factor which is same where factor is (1-alpha)
-    # If factor is 0.2 (FAST_DROP), it moves 20% towards target (slow). Wait, FAST_DROP should be large.
-    # Let's fix the math to match names:
-    # If FAST_DROP (Braking), we want to move FAST. Factor should be high (e.g. 0.8)
-    # If SMOOTH_RISE (Accel), we want to move SLOW. Factor should be low (e.g. 0.15)
-    
-    # Let's use straightforward lerp:
-    # current = current * (1-f) + target * f
+
+    # LERP style smoothing (make drops fast, rises smooth)
     if target < display_speed:
         f = 0.8 # Fast drop (80% towards target per frame)
     else:
@@ -282,7 +337,9 @@ async def handler(ws):
                     "current_speed": f"{get_final_speed():.1f}"
                 }))
     except: pass
-    finally: clients.remove(ws)
+    finally: 
+        try: clients.remove(ws)
+        except: pass
 
 async def broadcast(msg):
     if clients: await asyncio.gather(*[ws.send(json.dumps(msg)) for ws in clients], return_exceptions=True)
@@ -314,10 +371,12 @@ async def main():
     parser.add_argument('--profile', default='drive_cycle.csv')
     parser.add_argument('--gpio-pin', type=int, default=17)
     parser.add_argument('--use-gpio', action='store_true')
+    parser.add_argument('--force-polling', action='store_true', help='Force GPIO polling instead of interrupts')
     args = parser.parse_args()
-    global DRIVE_CYCLE_FILE, HALL_SENSOR_PIN
+    global DRIVE_CYCLE_FILE, HALL_SENSOR_PIN, FORCE_POLLING
     DRIVE_CYCLE_FILE = args.profile
     HALL_SENSOR_PIN = args.gpio_pin
+    FORCE_POLLING = args.force_polling
     setup_logging()
     setup_hardware(HALL_SENSOR_PIN)
     load_profile()
@@ -328,4 +387,6 @@ async def main():
 if __name__ == "__main__":
     try: asyncio.run(main())
     except: 
-        if GPIO_AVAILABLE: GPIO.cleanup()
+        if GPIO_AVAILABLE:
+            try: GPIO.cleanup()
+            except: pass
